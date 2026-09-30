@@ -12,7 +12,7 @@ import streamlit as st
 
 import banco
 from comum import (
-    VAZIO, campo_com_outro, campo_lista, campo_sim_nao, csv_excel, fmt_data,
+    garantir_colunas, VAZIO, campo_com_outro, campo_lista, campo_sim_nao, csv_excel, fmt_data,
     guardar_msg, mostrar_erros, opcoes_existentes, para_data, render_msg, texto,
 )
 from estilo import (
@@ -59,16 +59,18 @@ def carregar() -> pd.DataFrame:
         df = pd.DataFrame()
     if df.empty:
         return pd.DataFrame(columns=COLUNAS)
+    df = garantir_colunas(df, COLUNAS)
     for coluna in ("data_abertura", "prazo_final", "data_conclusao"):
         df[coluna] = df[coluna].map(para_data)
     return df
 
 
 def carregar_acidentes() -> dict:
-    """{id: rótulo} para vincular a ação a um acidente. Vazio se a tabela não responder."""
+    """{id: rótulo} para vincular a ação a um acidente."""
     try:
         df = banco.listar(banco.ACIDENTE)
-    except Exception:
+    except Exception as erro:
+        st.warning(f"Não foi possível ler os acidentes ({banco.ACIDENTE}): {erro}")
         return {}
     if df.empty:
         return {}
@@ -141,6 +143,9 @@ def campos_acao(df: pd.DataFrame, acidentes: dict, k: str, atual: dict) -> dict:
         format_func=lambda o: o if o == SEM_ACIDENTE else acidentes[o],
         help="Deixe sem vínculo para ações de inspeção, PGR ou auditoria.",
     )
+    if not acidentes:
+        st.caption("Nenhum acidente cadastrado ainda. Para vincular, cadastre primeiro em "
+                   "**Menu › Acidentes**.")
 
     c1, c2, c3 = st.columns([1.4, 1.4, 1])
     with c1:
