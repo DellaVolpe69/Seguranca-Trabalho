@@ -10,6 +10,7 @@ Arquivos:
   banco.py               leitura/gravação no Supabase
   comum.py               utilitários de tela (CPF, datas, campos)
   pagina_treinamento.py  RQ 10 → segtrabalho_treinamento
+  pagina_acidente.py     Relatório de Acidente → segtrabalho_acidente
   pagina_plano_acao.py   Plano de ação → segtrabalho_plano_acao
 """
 
