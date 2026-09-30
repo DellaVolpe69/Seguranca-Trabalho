@@ -16,7 +16,7 @@ import streamlit as st
 
 import banco
 from comum import (
-    FUNCOES_RQ05, VAZIO, campo_com_outro, campo_lista, cpf_valido, csv_excel, fmt_cpf,
+    garantir_colunas, FUNCOES_RQ05, VAZIO, campo_com_outro, campo_lista, csv_excel, erro_cpf, fmt_cpf,
     guardar_msg, mostrar_erros, opcoes_existentes, para_data, para_numero,
     render_msg, so_digitos, texto,
 )
@@ -61,6 +61,7 @@ def carregar() -> pd.DataFrame:
         df = pd.DataFrame()
     if df.empty:
         return pd.DataFrame(columns=COLUNAS)
+    df = garantir_colunas(df, COLUNAS)
     for coluna in ("data_treinamento", "data_validade"):
         df[coluna] = df[coluna].map(para_data)
     return df
@@ -163,8 +164,8 @@ def campos_participante(df: pd.DataFrame, lista: list, v: int) -> bool:
         erros = []
         if not texto(nome):
             erros.append("Informe o nome.")
-        if not cpf_valido(cpf_limpo):
-            erros.append(f"CPF inválido ({cpf or 'vazio'}). Confira os 11 números.")
+        if erro_cpf(cpf_limpo):
+            erros.append(erro_cpf(cpf_limpo))
         elif any(p["cpf"] == cpf_limpo for p in lista):
             erros.append("Essa pessoa já está na lista.")
         if erros:
@@ -402,8 +403,8 @@ def editar(reg: pd.Series, df: pd.DataFrame) -> None:
         erros = []
         if not texto(nome):
             erros.append("Nome em branco.")
-        if not cpf_valido(cpf_limpo):
-            erros.append("CPF inválido.")
+        if erro_cpf(cpf_limpo):
+            erros.append(erro_cpf(cpf_limpo))
         if not treinamento:
             erros.append("Informe o treinamento.")
         if not filial:
