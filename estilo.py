@@ -477,6 +477,25 @@ div[data-testid="stFormSubmitButton"] button:focus-visible {
 """
 
 
+# Ajuste próprio deste app sobre o CSS_MENU (que fica idêntico ao Metas TDV):
+# a borda original #EFE5DC quase some sobre a área creme da arte. O card é
+# dois elementos colados (topo HTML + st.button), então a borda nova vai nos
+# dois, sem a linha do meio. Injetar DEPOIS do CSS_MENU.
+CSS_MENU_DESTAQUE = """
+<style>
+.dv-cardtopo {
+    border: 1.5px solid #E8B894 !important; border-bottom: none !important;
+}
+div[data-testid="stButton"] button {
+    border: 1.5px solid #E8B894 !important; border-top: none !important;
+}
+div[data-testid="stButton"] button:hover {
+    border-color: #E4610A !important;
+}
+</style>
+"""
+
+
 # ---------------------------------------------------------------------
 # Navegação — sempre st.button + session_state, nunca <a href>: o link
 # recarrega a página, abre sessão nova e o login do Azure se perde.
