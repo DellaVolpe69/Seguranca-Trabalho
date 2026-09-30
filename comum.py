@@ -8,6 +8,19 @@ import streamlit as st
 
 OUTRO = "OUTRO — digitar"
 VAZIO = "—"
+
+# Funções da RQ 05 (aba "Listas"). Viram as opções do campo FUNÇÃO, junto
+# com as que já foram usadas no banco — quem lança escolhe em vez de digitar.
+FUNCOES_RQ05 = [
+    "Ajudante Manutenção Predial", "Líder de Manutenção Predial", "Auxiliar Manutenção Predial",
+    "Auxiliar Almoxarifado", "Supervisor de Almoxarifado", "Auxiliar de Borracheiro",
+    "Borracheiro", "Carpinteiro", "Eletricista auto", "Apontador", "Sup. de Manutenção",
+    "Gerente de Manutenção", "Lavador de Veículos", "Chefe de Manutenção",
+    "Auxiliar de Manutenção Geral", "Mecânico de Carreta PL", "Mecânico Diesel PL / SR",
+    "Mecânico Líder", "Operador de Check list", "Pintor Líder", "Polidor", "Frentista",
+    "Soldador", "Motorista", "Ajudante de Cargas", "Conferente", "Supervisor de Armazém",
+    "Gerente de Armazém", "Líder de Motorista", "Operador de Empilhadeira", "Auxiliar Operacional",
+]
 # Sim/Não com terceira opção: "não informado" fica NULL, não vira "Não".
 SIM_NAO = {VAZIO: None, "Sim": True, "Não": False}
 
@@ -101,8 +114,8 @@ def render_msg(chave: str) -> None:
         st.error(texto_msg)
 
 
-def mostrar_erros(erros: list) -> None:
-    st.error("Corrija antes de salvar:\n\n" + "\n".join(f"- {e}" for e in erros))
+def mostrar_erros(erros: list, titulo: str = "Corrija antes de salvar:") -> None:
+    st.error(f"{titulo}\n\n" + "\n".join(f"- {e}" for e in erros))
 
 
 # ---------------------------------------------------------------------
