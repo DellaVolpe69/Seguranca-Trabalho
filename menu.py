@@ -13,6 +13,7 @@ from datetime import date
 
 import streamlit as st
 
+import pagina_acidente
 import pagina_plano_acao
 import pagina_treinamento
 from estilo import (
@@ -29,6 +30,11 @@ SVG_CAPELO = (
     ' stroke-linecap="round" stroke-linejoin="round">'
     '<path d="M2.5 9L12 4.5 21.5 9 12 13.5z"/><path d="M6.5 11v4.5c0 1.4 2.5 3 5.5 3s5.5-1.6 5.5-3V11"/>'
     '<path d="M21.5 9v5"/></svg>'
+)
+SVG_ALERTA = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    '<path d="M12 3.5L21.5 20h-19z"/><path d="M12 10v4.5"/><path d="M12 17.3v.2"/></svg>'
 )
 SVG_CHECKLIST = (
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"'
@@ -53,12 +59,15 @@ SVG_CALENDARIO = (
 CARDS_MENU = [
     ("treinamento", "TREINAMENTOS", SVG_CAPELO,
      "Listas de presença (RQ 10): treinamentos, integrações e reciclagens, com validade e avaliação."),
+    ("acidente", "ACIDENTES", SVG_ALERTA,
+     "Relatório de Acidente: o que aconteceu, quem se envolveu, veículo e tipo de perda."),
     ("plano_acao", "PLANO DE AÇÃO", SVG_CHECKLIST,
      "Ações de acidentes, inspeções e PGR: prazo, conclusão e eficácia."),
 ]
 
 ROTAS = {
     "treinamento": pagina_treinamento.tela,
+    "acidente": pagina_acidente.tela,
     "plano_acao": pagina_plano_acao.tela,
 }
 
