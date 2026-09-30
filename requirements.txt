@@ -1,1 +1,10 @@
 streamlit
+pandas
+supabase
+minio==7.1.2
+pyarrow
+python-dotenv
+requests-oauthlib
+office365-rest-python-client
+openpyxl
+git+https://github.com/DellaVolpe69/Modulos.git@main
