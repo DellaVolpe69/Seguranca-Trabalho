@@ -1,7 +1,8 @@
 """Treinamentos — RQ 10 (Lista de Presença) → segtrabalho_treinamento.
 
 Uma lista de presença = um treinamento, numa data e filial, com N
-participantes. Cada participante vira uma linha na tabela.
+participantes, lançados um a um em campos normais (sem grade). Cada
+participante vira uma linha na tabela.
 
 Nenhum formulário usa st.form: com clear_on_submit os campos seriam apagados
 também quando o insert falhasse. As chaves dos campos levam um número de
@@ -15,7 +16,7 @@ import streamlit as st
 
 import banco
 from comum import (
-    VAZIO, campo_com_outro, campo_lista, cpf_valido, csv_excel, fmt_cpf,
+    FUNCOES_RQ05, VAZIO, campo_com_outro, campo_lista, cpf_valido, csv_excel, fmt_cpf,
     guardar_msg, mostrar_erros, opcoes_existentes, para_data, para_numero,
     render_msg, so_digitos, texto,
 )
@@ -78,11 +79,22 @@ def situacao_validade(validade, hoje: date) -> str:
 # ---------------------------------------------------------------------
 # Nova lista de presença
 # ---------------------------------------------------------------------
+# Cada participante é lançado em campos normais e entra numa lista com
+# "➕ Adicionar participante" — mais simples para quem não está acostumado
+# a editar célula por célula numa grade. A lista só vai para o banco no
+# "Salvar", toda de uma vez.
+
+def opcoes_funcao(df: pd.DataFrame) -> list:
+    """Funções da RQ 05 + as que já foram usadas no banco."""
+    return sorted(set(FUNCOES_RQ05) | set(opcoes_existentes(df, "funcao")), key=str.casefold)
+
 
 def nova_lista(df: pd.DataFrame, usuario: dict) -> None:
     v = st.session_state.setdefault("tr_versao", 0)
+    lista = st.session_state.setdefault(f"tr_lista_{v}", [])
     render_msg(MSG_NOVA)
 
+    titulo_secao("1. Treinamento", "O que foi aplicado, quando e em qual filial.")
     c1, c2, c3 = st.columns([2, 1, 1.5])
     with c1:
         treinamento = campo_com_outro(
@@ -109,40 +121,84 @@ def nova_lista(df: pd.DataFrame, usuario: dict) -> None:
         )
 
     titulo_secao(
-        "Participantes",
-        "Uma linha por pessoa. Clique na linha em branco no fim da tabela para acrescentar.",
+        "2. Participantes",
+        "Preencha os dados de uma pessoa e clique em ➕ Adicionar participante. Repita para cada uma.",
     )
-    modelo = pd.DataFrame({
-        "nome": pd.Series(dtype="object"),
-        "cpf": pd.Series(dtype="object"),
-        "funcao": pd.Series(dtype="object"),
-        "setor": pd.Series(dtype="object"),
-        "vinculo": pd.Series(dtype="object"),
-        "avaliacao_nota": pd.Series(dtype="float"),
-    })
-    participantes = st.data_editor(
-        modelo,
-        key=f"tr_participantes_{v}",
-        num_rows="dynamic",
-        hide_index=True,
-        width="stretch",
-        column_config={
-            "nome": st.column_config.TextColumn("NOME", required=True, width="large"),
-            "cpf": st.column_config.TextColumn("CPF", required=True, help="Com ou sem pontuação"),
-            "funcao": st.column_config.TextColumn("FUNÇÃO"),
-            "setor": st.column_config.TextColumn("SETOR"),
-            "vinculo": st.column_config.SelectboxColumn("VÍNCULO", options=VINCULOS),
-            "avaliacao_nota": st.column_config.NumberColumn(
-                "AVALIAÇÃO (0–10)", min_value=0.0, max_value=10.0, step=0.5, format="%.1f"
-            ),
-        },
-    )
+    rascunho = campos_participante(df, lista, v)
+    lista_participantes(lista, v)
 
-    if st.button("💾 Salvar lista de presença", type="primary", key=f"tr_salvar_{v}"):
-        salvar_lista(df, usuario, treinamento, data_tr, filial, validade, link, participantes)
+    total = len(lista)
+    rotulo = f"💾 Salvar lista de presença ({total} participante{'' if total == 1 else 's'})"
+    if st.button(rotulo, type="primary", key=f"tr_salvar_{v}"):
+        salvar_lista(df, usuario, treinamento, data_tr, filial, validade, link, lista, rascunho)
 
 
-def salvar_lista(df, usuario, treinamento, data_tr, filial, validade, link, participantes) -> None:
+def campos_participante(df: pd.DataFrame, lista: list, v: int) -> bool:
+    """Campos de UM participante + botão Adicionar. Devolve True se sobrou algo digitado."""
+    pv = st.session_state.setdefault("tr_pv", 0)  # avança a cada pessoa adicionada: limpa os campos
+    k = f"tr_p_{v}_{pv}"
+
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        nome = st.text_input("NOME COMPLETO", key=f"{k}_nome")
+    with c2:
+        cpf = st.text_input("CPF", key=f"{k}_cpf", placeholder="000.000.000-00")
+
+    c3, c4, c5, c6 = st.columns([1.6, 1.4, 1, 1])
+    with c3:
+        funcao = campo_com_outro("FUNÇÃO", opcoes_funcao(df), f"{k}_funcao")
+    with c4:
+        setor = campo_com_outro("SETOR", opcoes_existentes(df, "setor"), f"{k}_setor")
+    with c5:
+        vinculo = campo_lista("VÍNCULO", VINCULOS, f"{k}_vinculo")
+    with c6:
+        nota = st.number_input(
+            "AVALIAÇÃO (0 a 10)", min_value=0.0, max_value=10.0, step=0.5, value=None,
+            placeholder="—", key=f"{k}_nota",
+            help="Nota da avaliação do treinamento. Deixe em branco se não houve avaliação.",
+        )
+
+    if st.button("➕ Adicionar participante", key=f"{k}_add"):
+        cpf_limpo = so_digitos(cpf)
+        erros = []
+        if not texto(nome):
+            erros.append("Informe o nome.")
+        if not cpf_valido(cpf_limpo):
+            erros.append(f"CPF inválido ({cpf or 'vazio'}). Confira os 11 números.")
+        elif any(p["cpf"] == cpf_limpo for p in lista):
+            erros.append("Essa pessoa já está na lista.")
+        if erros:
+            mostrar_erros(erros, "Corrija antes de adicionar:")
+        else:
+            lista.append({
+                "nome": texto(nome), "cpf": cpf_limpo, "funcao": funcao, "setor": setor,
+                "vinculo": vinculo, "avaliacao_nota": nota,
+            })
+            st.session_state["tr_pv"] += 1
+            st.rerun()
+
+    return bool(texto(nome) or so_digitos(cpf))
+
+
+def lista_participantes(lista: list, v: int) -> None:
+    if not lista:
+        st.caption("Nenhum participante adicionado ainda.")
+        return
+    with st.container(border=True):
+        for i, p in enumerate(lista):
+            nota = VAZIO if p["avaliacao_nota"] is None else f"{p['avaliacao_nota']:.1f}".replace(".", ",")
+            detalhes = " · ".join([
+                fmt_cpf(p["cpf"]), p["funcao"] or VAZIO, p["setor"] or VAZIO,
+                p["vinculo"] or VAZIO, f"avaliação {nota}",
+            ])
+            texto_col, botao_col = st.columns([9, 1])
+            texto_col.markdown(f"**{i + 1}. {p['nome']}**  \n{detalhes}")
+            # on_click roda antes do rerun: o índice ainda é o desta linha
+            botao_col.button("🗑️", key=f"tr_rm_{v}_{i}", help="Remover da lista",
+                             on_click=lista.pop, args=(i,))
+
+
+def salvar_lista(df, usuario, treinamento, data_tr, filial, validade, link, lista, rascunho) -> None:
     erros = []
     if not treinamento:
         erros.append("Informe o treinamento.")
@@ -152,54 +208,42 @@ def salvar_lista(df, usuario, treinamento, data_tr, filial, validade, link, part
         erros.append("Informe a filial.")
     if validade and data_tr and validade < data_tr:
         erros.append("A validade não pode ser anterior à data do treinamento.")
+    if rascunho:
+        erros.append("Há um participante preenchido que não entrou na lista: clique em "
+                     "➕ Adicionar participante (ou apague os campos) antes de salvar.")
+    if not lista:
+        erros.append("Adicione pelo menos um participante.")
 
-    # CPFs já lançados neste mesmo treinamento e data (evita gravar a lista duas vezes)
-    ja_lancados = set()
+    # quem já está lançado neste treinamento nesta data (evita gravar a lista duas vezes)
     if not df.empty and treinamento and data_tr:
         mesmo = df[(df["treinamento"] == treinamento) & (df["data_treinamento"] == data_tr)]
         ja_lancados = set(mesmo["cpf"].map(so_digitos))
+        for p in lista:
+            if p["cpf"] in ja_lancados:
+                erros.append(f"{p['nome']} já está lançado(a) neste treinamento nesta data.")
 
-    linhas, vistos = [], set()
-    for n, (_, p) in enumerate(participantes.iterrows(), start=1):
-        nome, cpf = texto(p.get("nome")), so_digitos(p.get("cpf"))
-        if not nome and not cpf:
-            continue  # linha em branco
-        if not nome:
-            erros.append(f"Linha {n}: nome em branco.")
-        if not cpf_valido(cpf):
-            erros.append(f"Linha {n}: CPF inválido ({p.get('cpf') or 'vazio'}).")
-        elif cpf in vistos:
-            erros.append(f"Linha {n}: CPF repetido na lista.")
-        elif cpf in ja_lancados:
-            erros.append(f"Linha {n}: {nome} já está lançado neste treinamento nesta data.")
-        vistos.add(cpf)
-        linhas.append({
-            "nome": nome,
-            "cpf": cpf,
-            "data_treinamento": data_tr,
-            "filial": filial,
-            "funcao": texto(p.get("funcao")),
-            "setor": texto(p.get("setor")),
-            "treinamento": treinamento,
-            "vinculo": texto(p.get("vinculo")),
-            "data_validade": validade,
-            "avaliacao_nota": para_numero(p.get("avaliacao_nota")),
-            "link_evidencia": texto(link),
-            "criado_por": usuario["email"],
-        })
-
-    if not linhas:
-        erros.append("Inclua pelo menos um participante.")
     if erros:
         mostrar_erros(erros)
         return
 
+    linhas = [{
+        **p,
+        "data_treinamento": data_tr,
+        "filial": filial,
+        "treinamento": treinamento,
+        "data_validade": validade,
+        "link_evidencia": texto(link),
+        "criado_por": usuario["email"],
+    } for p in lista]
+
     ok, msg = banco.inserir(banco.TREINAMENTO, linhas)
     if not ok:
-        st.error(msg)  # campos preservados: nada foi limpo
+        st.error(msg)  # nada foi limpo: a lista continua na tela
         return
     guardar_msg(MSG_NOVA, "success", f"Lista de presença salva — {msg}")
+    st.session_state.pop(f"tr_lista_{st.session_state['tr_versao']}", None)
     st.session_state["tr_versao"] += 1
+    st.session_state["tr_pv"] += 1
     st.rerun()
 
 
@@ -334,9 +378,9 @@ def editar(reg: pd.Series, df: pd.DataFrame) -> None:
 
     c7, c8, c9, c10 = st.columns(4)
     with c7:
-        funcao = st.text_input("FUNÇÃO", value=texto(reg["funcao"]) or "", key=f"{k}_funcao")
+        funcao = campo_com_outro("FUNÇÃO", opcoes_funcao(df), f"{k}_funcao", reg["funcao"])
     with c8:
-        setor = st.text_input("SETOR", value=texto(reg["setor"]) or "", key=f"{k}_setor")
+        setor = campo_com_outro("SETOR", opcoes_existentes(df, "setor"), f"{k}_setor", reg["setor"])
     with c9:
         nota = st.number_input(
             "AVALIAÇÃO (0–10)", min_value=0.0, max_value=10.0, step=0.5,
