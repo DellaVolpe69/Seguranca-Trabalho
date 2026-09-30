@@ -9,12 +9,15 @@ lá, copie de novo em vez de editar aqui, para os apps não divergirem.
   CSS_INTERNO     → telas de trabalho (fundo claro, campos, cartões, sidebar)
 """
 
+import html
+
 import streamlit as st
 
 URL_FUNDO_LOGIN = "https://raw.githubusercontent.com/DellaVolpe69/Images/main/AppBackground02.png"
 URL_LOGO_BRANCO = "https://raw.githubusercontent.com/DellaVolpe69/Images/main/DellaVolpeLogoBranco.png"
-# Arte do Metas TDV com o canto trocado por SEG TRABALHO (arquivo em imagens/).
-URL_FUNDO_MENU = "https://raw.githubusercontent.com/DellaVolpe69/Images/main/SEG_TRABALHO.png"
+# Arte padrão do menu, SEM texto no canto: o nome do app é escrito por cima
+# em HTML (html_selo_canto). A mesma imagem serve para qualquer app.
+URL_FUNDO_MENU = "https://raw.githubusercontent.com/DellaVolpe69/Images/main/FundoMenuPadrao.png"
 URL_LOGO_COLORIDO = "https://raw.githubusercontent.com/DellaVolpe69/Images/main/logo.png"
 
 CSS_LOGIN = f"""
@@ -493,6 +496,82 @@ div[data-testid="stButton"] button:hover {
     border-color: #E4610A !important;
 }
 </style>
+"""
+
+
+# ---------------------------------------------------------------------
+# Nome do app no canto superior direito da arte (dentro do arco verde)
+# ---------------------------------------------------------------------
+# A arte escala com a largura da tela (100% auto, fixed), então o texto é
+# posicionado em vw para escalar junto: 1vw = 16,72 px da arte (1672 px).
+# Medidas tiradas do "METAS TDV" original da arte.
+SELO_DIREITA_VW = 3.65          # borda direita do texto: x 1611 px
+SELO_TITULO_BASE_VW = 3.53      # linha de base do título: y 59 px
+SELO_TITULO_MAX_VW = 2.15       # tamanho do "METAS TDV" original (letra de 25 px)
+SELO_TITULO_LARGURA_VW = 12.0   # espaço até o arco, com folga: de x ~1411 a 1611 px
+SELO_TITULO_ESPACO_EM = -0.01   # letter-spacing do título
+SELO_SUB_TAM_VW = 0.63          # subtítulo: letra de 9 px
+SELO_SUB_BASES_VW = (4.70, 5.66)  # linhas de base: y 78,5 e 94,5 px
+SELO_POPPINS_BASE_EM = 0.85     # onde fica a linha de base da Poppins com line-height 1
+
+# Largura de cada letra da Poppins 700, em em (medida no navegador). Com ela
+# o título ocupa o máximo de espaço sem encostar no arco, qualquer que seja o
+# nome: "M" e "W" são largas, "I" é estreita — uma média erraria.
+LARGURA_POPPINS_700 = {
+    "A": .737, "B": .659, "C": .762, "D": .727, "E": .541, "F": .547, "G": .762,
+    "H": .731, "I": .295, "J": .578, "K": .697, "L": .477, "M": .918, "N": .752,
+    "O": .786, "P": .624, "Q": .788, "R": .652, "S": .615, "T": .591, "U": .705,
+    "V": .730, "W": 1.052, "X": .715, "Y": .671, "Z": .596,
+    "Á": .737, "Â": .737, "Ã": .737, "À": .737, "É": .541, "Ê": .541, "Í": .295,
+    "Ó": .786, "Ô": .786, "Õ": .786, "Ú": .705, "Ç": .762,
+    "0": .652, "1": .376, "2": .571, "3": .605, "4": .677, "5": .650, "6": .637,
+    "7": .535, "8": .648, "9": .615, " ": .212, "&": .798, "-": .580, ".": .282, "/": .453,
+}
+
+
+def largura_titulo_em(texto: str) -> float:
+    """Largura do texto em em; letra fora da tabela conta como larga (0,8)."""
+    return sum(LARGURA_POPPINS_700.get(c, 0.8) for c in texto.upper()) + SELO_TITULO_ESPACO_EM * len(texto)
+
+
+def html_selo_canto(destaque: str, resto: str,
+                    sub: tuple = ("TRANSPORTES", "DELLA VOLPE")) -> str:
+    """Nome do app no canto da arte, ex.: html_selo_canto("SEG", "TRABALHO").
+
+    O tamanho do título encolhe sozinho para nomes longos, para não passar
+    por cima do arco verde. Some abaixo de 980px, junto com a arte.
+    """
+    texto = f"{destaque} {resto}".strip()
+    tamanho = min(SELO_TITULO_MAX_VW, SELO_TITULO_LARGURA_VW / largura_titulo_em(texto))
+
+    def topo(base_vw: float, tam_vw: float) -> str:
+        return f"{base_vw - SELO_POPPINS_BASE_EM * tam_vw:.3f}vw"
+
+    linhas_sub = "".join(
+        f'<div class="dv-selo-sub" style="top:{topo(base, SELO_SUB_TAM_VW)}">{html.escape(linha)}</div>'
+        for base, linha in zip(SELO_SUB_BASES_VW, sub)
+    )
+    return f"""
+<style>
+.dv-selo-titulo, .dv-selo-sub {{
+    position: fixed; right: {SELO_DIREITA_VW}vw; z-index: 1; pointer-events: none;
+    font-family: 'Poppins', 'Segoe UI', sans-serif !important;
+    line-height: 1 !important; white-space: nowrap; text-align: right; margin: 0;
+}}
+.dv-selo-titulo {{
+    top: {topo(SELO_TITULO_BASE_VW, tamanho)};
+    font-size: {tamanho:.3f}vw !important; font-weight: 700 !important;
+    color: #3C352D !important; letter-spacing: {SELO_TITULO_ESPACO_EM}em;
+}}
+.dv-selo-titulo b {{ color: #DE6B1E !important; font-weight: 700 !important; }}
+.dv-selo-sub {{
+    font-size: {SELO_SUB_TAM_VW}vw !important; font-weight: 500 !important;
+    color: #6C685E !important; letter-spacing: 0.18em; margin-right: -0.18em;
+}}
+@media (max-width: 980px) {{ .dv-selo-titulo, .dv-selo-sub {{ display: none; }} }}
+</style>
+<div class="dv-selo-titulo"><b>{html.escape(destaque)}</b> {html.escape(resto)}</div>
+{linhas_sub}
 """
 
 
