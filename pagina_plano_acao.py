@@ -65,6 +65,12 @@ def carregar() -> pd.DataFrame:
     return df
 
 
+def ir_para_acidente() -> None:
+    """Atalho do Plano de Ação para o cadastro de acidente (página "Novo relatório")."""
+    st.session_state["tela"] = "acidente"
+    st.session_state["ac_pagina"] = "novo"
+
+
 def carregar_acidentes() -> dict:
     """{id: rótulo} para vincular a ação a um acidente."""
     try:
@@ -144,8 +150,11 @@ def campos_acao(df: pd.DataFrame, acidentes: dict, k: str, atual: dict) -> dict:
         help="Deixe sem vínculo para ações de inspeção, PGR ou auditoria.",
     )
     if not acidentes:
-        st.caption("Nenhum acidente cadastrado ainda. Para vincular, cadastre primeiro em "
-                   "**Menu › Acidentes**.")
+        aviso, botao = st.columns([3, 1.2])
+        aviso.caption("Nenhum acidente cadastrado ainda. Para vincular a ação a um acidente, "
+                      "cadastre o acidente primeiro.")
+        botao.button("🚛 Cadastrar acidente", key=f"{k}_ir_acidente", on_click=ir_para_acidente,
+                     help="Abre a tela de Acidentes. O que foi digitado nesta ação não é guardado.")
 
     c1, c2, c3 = st.columns([1.4, 1.4, 1])
     with c1:
