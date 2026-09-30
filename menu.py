@@ -15,7 +15,7 @@ import streamlit as st
 
 import pagina_plano_acao
 import pagina_treinamento
-from estilo import CSS_MENU, URL_FUNDO_MENU, URL_LOGO_COLORIDO, ir_para
+from estilo import CSS_MENU, CSS_MENU_DESTAQUE, URL_FUNDO_MENU, URL_LOGO_COLORIDO, ir_para
 
 # ícones em SVG: currentColor faz cada um herdar a cor do seu card
 SVG_CAPELO = (
@@ -83,6 +83,7 @@ def html_card_topo(titulo: str, icone: str, descricao: str) -> str:
 def tela_menu(usuario: dict) -> None:
     estilo = CSS_MENU.replace("URL_DO_FUNDO", URL_FUNDO_MENU).replace("URL_DO_LOGO", URL_LOGO_COLORIDO)
     st.markdown(estilo, unsafe_allow_html=True)
+    st.markdown(CSS_MENU_DESTAQUE, unsafe_allow_html=True)
     st.markdown(html_cabecalho(usuario), unsafe_allow_html=True)
 
     # a terceira coluna é só respiro: mantém os cards na área creme, sem
