@@ -10,7 +10,7 @@ apps da equipe.
 import os
 import subprocess
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 
 import pandas as pd
@@ -53,7 +53,8 @@ def credenciais():
 # execução e o coloca no caminho de importação.
 MODULOS_DIR = Path(__file__).parent / "Modulos"
 if not MODULOS_DIR.exists():
-    print("📥 Clonando repositório Modulos do GitHub...")
+    # sem emoji: o console do Windows (cp1252) quebra com UnicodeEncodeError
+    print("Clonando repositorio Modulos do GitHub...")
     subprocess.run(
         ["git", "clone", "https://github.com/DellaVolpe69/Modulos.git", str(MODULOS_DIR)],
         check=True,
@@ -87,7 +88,7 @@ def json_seguro(dados: dict) -> dict:
             saida[chave] = None
         elif isinstance(valor, pd.Timestamp):
             saida[chave] = valor.date().isoformat()
-        elif isinstance(valor, (datetime, date)):
+        elif isinstance(valor, (datetime, date, time)):
             saida[chave] = valor.isoformat()
         elif hasattr(valor, "item"):  # escalares numpy/pandas
             saida[chave] = valor.item()
