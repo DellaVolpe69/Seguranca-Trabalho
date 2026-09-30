@@ -1,7 +1,7 @@
 """Utilitários de tela compartilhados pelas páginas."""
 
 import re
-from datetime import date, datetime
+from datetime import date, datetime, time
 
 import pandas as pd
 import streamlit as st
@@ -57,6 +57,15 @@ def para_data(valor):
     return pd.to_datetime(valor).date()
 
 
+def para_hora(valor):
+    """'14:30:00' (como o Supabase devolve) -> time(14, 30)."""
+    if vazio(valor):
+        return None
+    if isinstance(valor, time):
+        return valor
+    return time.fromisoformat(str(valor)[:8])
+
+
 def para_numero(valor):
     return None if vazio(valor) else float(valor)
 
@@ -91,6 +100,19 @@ def cpf_valido(cpf: str) -> bool:
     return True
 
 
+def erro_cpf(cpf_digitado) -> str | None:
+    """Mensagem para quem digitou, ou None se o CPF é válido."""
+    cpf = so_digitos(cpf_digitado)
+    if not cpf:
+        return "Informe o CPF."
+    if len(cpf) != 11:
+        return f"O CPF precisa ter 11 números — o digitado tem {len(cpf)}."
+    if not cpf_valido(cpf):
+        return (f"O CPF {fmt_cpf(cpf)} não existe: os 2 últimos números (dígitos verificadores) "
+                "não batem com os 9 primeiros. Provavelmente algum número foi digitado errado.")
+    return None
+
+
 def fmt_cpf(cpf) -> str:
     d = so_digitos(cpf)
     return f"{d[:3]}.{d[3:6]}.{d[6:9]}-{d[9:]}" if len(d) == 11 else d
@@ -121,6 +143,12 @@ def mostrar_erros(erros: list, titulo: str = "Corrija antes de salvar:") -> None
 # ---------------------------------------------------------------------
 # Campos
 # ---------------------------------------------------------------------
+
+def garantir_colunas(df: pd.DataFrame, colunas: list) -> pd.DataFrame:
+    """Acrescenta (vazia) qualquer coluna esperada que o banco não devolveu."""
+    faltando = [c for c in colunas if c not in df.columns]
+    return df.assign(**{c: None for c in faltando}) if faltando else df
+
 
 def opcoes_existentes(df: pd.DataFrame, coluna: str) -> list:
     """Valores já usados na coluna — viram as opções do selectbox."""
