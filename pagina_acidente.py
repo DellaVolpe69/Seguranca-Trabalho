@@ -12,6 +12,7 @@ import pandas as pd
 import streamlit as st
 
 import banco
+import pagina_plano_acao as plano
 from comum import (
     garantir_colunas, campo_com_outro, campo_lista, campo_sim_nao, csv_excel, erro_cpf, fmt_cpf,
     guardar_msg, mostrar_erros, opcoes_existentes, para_data, para_hora, render_msg,
@@ -335,10 +336,10 @@ def editar(reg: pd.Series, df: pd.DataFrame) -> None:
     rid = int(reg["id"])
     n_acoes = int(reg["acoes"])
     k = f"ac_ed_{rid}_{st.session_state['ac_tabela_v']}"
-    titulo_secao(
-        f"Editar acidente #{rid}",
-        f"{n_acoes} ação(ões) vinculada(s) no Plano de Ação." if n_acoes else "Nenhuma ação vinculada ainda.",
-    )
+    titulo_secao(f"Acidente #{rid}")
+    acoes_do_acidente(rid, reg["filial_origem"], k)
+
+    titulo_secao("Editar dados do acidente")
     dados = campos_acidente(df, k, reg.to_dict())
 
     confirmar = st.checkbox("Quero excluir este acidente", key=f"{k}_confirma")
@@ -359,6 +360,47 @@ def editar(reg: pd.Series, df: pd.DataFrame) -> None:
                      "as ações no Plano de Ação antes de excluir o acidente.")
             return
         concluir(banco.excluir(banco.ACIDENTE, rid))
+
+
+def nova_acao_para(rid: int, filial) -> None:
+    """Abre o Plano de Ação › Nova ação já com este acidente (e a filial) preenchidos."""
+    st.session_state["tela"] = "plano_acao"
+    st.session_state["pa_pagina"] = "nova"
+    st.session_state["pa_versao"] = st.session_state.get("pa_versao", 0) + 1  # campos novos, sem rascunho
+    st.session_state["pa_prefill"] = {"acidente_id": rid, "filial": filial}
+
+
+def acoes_do_acidente(rid: int, filial, k: str) -> None:
+    """As ações do Plano de Ação vinculadas a este acidente (1 acidente → N ações)."""
+    acoes = plano.carregar()
+    if not acoes.empty:
+        acoes = acoes[acoes["acidente_id"] == rid]
+
+    if acoes.empty:
+        st.caption("Nenhuma ação vinculada a este acidente ainda.")
+    else:
+        acoes = plano.enriquecer(acoes)
+        tabela = acoes[["id", "situacao", "criticidade", "plano_acao", "responsavel", "prazo_final",
+                        "data_conclusao", "status"]].copy()
+        textos = ["criticidade", "plano_acao", "responsavel"]
+        tabela[textos] = tabela[textos].fillna("")
+        st.dataframe(
+            tabela,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "id": st.column_config.NumberColumn("AÇÃO", format="%d", width="small"),
+                "situacao": "SITUAÇÃO",
+                "criticidade": "CRITICIDADE",
+                "plano_acao": st.column_config.TextColumn("PLANO DE AÇÃO", width="large"),
+                "responsavel": "RESPONSÁVEL",
+                "prazo_final": st.column_config.DateColumn("PRAZO", format="DD/MM/YYYY"),
+                "data_conclusao": st.column_config.DateColumn("CONCLUSÃO", format="DD/MM/YYYY"),
+                "status": "STATUS",
+            },
+        )
+    st.button("➕ Nova ação para este acidente", key=f"{k}_nova_acao",
+              on_click=nova_acao_para, args=(rid, filial))
 
 
 def concluir(resultado: tuple) -> None:
