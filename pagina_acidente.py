@@ -11,7 +11,9 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
+import acesso
 import banco
+import evidencia
 import pagina_plano_acao as plano
 from comum import (
     garantir_colunas, campo_com_outro, campo_lista, campo_sim_nao, csv_excel, erro_cpf, fmt_cpf,
@@ -35,7 +37,7 @@ TIPOS_MOTORISTA = ["Frota", "Agregado", "Terceiro"]
 COLUNAS = [
     "id", "data_evento", "hora_evento", "localizacao", "tipo_perda", "descricao", "nome",
     "origem", "destino", "filial_origem", "cpf", "produto_perigoso", "data_nascimento",
-    "tipo_motorista", "placa", "link_evidencia", "criado_em", "criado_por",
+    "tipo_motorista", "placa", "link_evidencia", "cod_filial", "criado_em", "criado_por",
 ]
 MSG_NOVO = "ac_msg_novo"
 MSG_REG = "ac_msg_reg"
@@ -58,7 +60,7 @@ def tela(usuario: dict) -> None:
 
 def carregar() -> pd.DataFrame:
     try:
-        df = banco.listar(banco.ACIDENTE)
+        df = acesso.listar(banco.ACIDENTE)
     except Exception as erro:
         st.error(f"Não foi possível ler {banco.ACIDENTE}: {erro}")
         df = pd.DataFrame()
@@ -91,10 +93,7 @@ def campos_acidente(df: pd.DataFrame, k: str, atual: dict) -> dict:
     with c2:
         hora = st.time_input("HORA", value=atual.get("hora_evento"), step=300, key=f"{k}_hora")
     with c3:
-        filial = campo_com_outro(
-            "FILIAL DE ORIGEM", opcoes_existentes(df, "filial_origem"), f"{k}_filial",
-            atual.get("filial_origem"),
-        )
+        cod_filial, filial = acesso.campo_filial("FILIAL DE ORIGEM", f"{k}_filial", atual.get("cod_filial"))
 
     c4, c5, c6 = st.columns([1.6, 1.4, 1])
     with c4:
@@ -152,15 +151,19 @@ def campos_acidente(df: pd.DataFrame, k: str, atual: dict) -> dict:
             "DESTINO (ENDEREÇO)", value=texto(atual.get("destino")) or "", key=f"{k}_destino"
         )
 
-    link = st.text_input(
-        "LINK DA EVIDÊNCIA", value=texto(atual.get("link_evidencia")) or "", key=f"{k}_link",
-        placeholder="https://dellavolpe.sharepoint.com/...",
+    titulo_secao("4. Evidência")
+    link_atual = texto(atual.get("link_evidencia"))
+    if link_atual:
+        evidencia.mostrar(link_atual)
+    arquivo = evidencia.campo(
+        "SUBSTITUIR EVIDÊNCIA" if link_atual else "ANEXAR EVIDÊNCIA (relatório, fotos)", f"{k}_arquivo"
     )
 
     return {
         "data_evento": data_evento,
         "hora_evento": hora,
         "filial_origem": filial,
+        "cod_filial": cod_filial,
         "localizacao": texto(localizacao),
         "tipo_perda": tipo_perda,
         "produto_perigoso": produto_perigoso,
@@ -172,7 +175,8 @@ def campos_acidente(df: pd.DataFrame, k: str, atual: dict) -> dict:
         "placa": placa_limpa(placa) or None,
         "origem": texto(origem),
         "destino": texto(destino),
-        "link_evidencia": texto(link),
+        "link_evidencia": link_atual,
+        "_arquivo": arquivo,  # não é coluna: sai antes de gravar
     }
 
 
@@ -210,7 +214,9 @@ def novo(df: pd.DataFrame, usuario: dict) -> None:
             mostrar_erros(erros)
             return
         dados["criado_por"] = usuario["email"]
-        ok, msg = banco.inserir(banco.ACIDENTE, [dados])
+        arquivo = dados.pop("_arquivo")
+        ok, msg = evidencia.gravar(arquivo, "acidente", lambda caminho: banco.inserir(
+            banco.ACIDENTE, [{**dados, "link_evidencia": caminho or dados["link_evidencia"]}]))
         if not ok:
             st.error(msg)
             return
@@ -230,7 +236,7 @@ def novo(df: pd.DataFrame, usuario: dict) -> None:
 def acoes_por_acidente() -> dict:
     """{acidente_id: quantidade de ações} — para mostrar na tabela e travar exclusão."""
     try:
-        acoes = banco.listar(banco.PLANO_ACAO)
+        acoes = acesso.listar(banco.PLANO_ACAO)
     except Exception:
         return {}
     if acoes.empty or "acidente_id" not in acoes:
@@ -337,7 +343,7 @@ def editar(reg: pd.Series, df: pd.DataFrame) -> None:
     n_acoes = int(reg["acoes"])
     k = f"ac_ed_{rid}_{st.session_state['ac_tabela_v']}"
     titulo_secao(f"Acidente #{rid}")
-    acoes_do_acidente(rid, reg["filial_origem"], k)
+    acoes_do_acidente(rid, reg["cod_filial"], k)
 
     titulo_secao("Editar dados do acidente")
     dados = campos_acidente(df, k, reg.to_dict())
@@ -352,7 +358,9 @@ def editar(reg: pd.Series, df: pd.DataFrame) -> None:
         if erros:
             mostrar_erros(erros)
             return
-        concluir(banco.atualizar(banco.ACIDENTE, rid, dados))
+        arquivo = dados.pop("_arquivo")
+        concluir(evidencia.gravar(arquivo, "acidente", lambda caminho: banco.atualizar(
+            banco.ACIDENTE, rid, {**dados, "link_evidencia": caminho or dados["link_evidencia"]})))
     if apagar:
         if n_acoes:
             # a FK do plano de ação barraria no banco com uma mensagem técnica
@@ -362,15 +370,15 @@ def editar(reg: pd.Series, df: pd.DataFrame) -> None:
         concluir(banco.excluir(banco.ACIDENTE, rid))
 
 
-def nova_acao_para(rid: int, filial) -> None:
+def nova_acao_para(rid: int, cod_filial) -> None:
     """Abre o Plano de Ação › Nova ação já com este acidente (e a filial) preenchidos."""
     st.session_state["tela"] = "plano_acao"
     st.session_state["pa_pagina"] = "nova"
     st.session_state["pa_versao"] = st.session_state.get("pa_versao", 0) + 1  # campos novos, sem rascunho
-    st.session_state["pa_prefill"] = {"acidente_id": rid, "filial": filial}
+    st.session_state["pa_prefill"] = {"acidente_id": rid, "cod_filial": cod_filial}
 
 
-def acoes_do_acidente(rid: int, filial, k: str) -> None:
+def acoes_do_acidente(rid: int, cod_filial, k: str) -> None:
     """As ações do Plano de Ação vinculadas a este acidente (1 acidente → N ações)."""
     acoes = plano.carregar()
     if not acoes.empty:
@@ -400,7 +408,7 @@ def acoes_do_acidente(rid: int, filial, k: str) -> None:
             },
         )
     st.button("➕ Nova ação para este acidente", key=f"{k}_nova_acao",
-              on_click=nova_acao_para, args=(rid, filial))
+              on_click=nova_acao_para, args=(rid, cod_filial))
 
 
 def concluir(resultado: tuple) -> None:
