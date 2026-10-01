@@ -14,7 +14,9 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
+import acesso
 import banco
+import evidencia
 from comum import (
     garantir_colunas, FUNCOES_RQ05, VAZIO, campo_com_outro, campo_lista, csv_excel, erro_cpf, fmt_cpf,
     guardar_msg, mostrar_erros, opcoes_existentes, para_data,
@@ -34,7 +36,7 @@ AVALIACOES = ["Satisfeito", "Normal", "Insatisfeito"]
 COLUNAS = [
     "id", "nome", "cpf", "data_treinamento", "filial", "funcao", "setor",
     "treinamento", "vinculo", "data_validade", "avaliacao",
-    "link_evidencia", "criado_em", "criado_por",
+    "link_evidencia", "cod_filial", "criado_em", "criado_por",
 ]
 MSG_NOVA = "tr_msg_nova"
 MSG_REG = "tr_msg_reg"
@@ -57,7 +59,7 @@ def tela(usuario: dict) -> None:
 
 def carregar() -> pd.DataFrame:
     try:
-        df = banco.listar(banco.TREINAMENTO)
+        df = acesso.listar(banco.TREINAMENTO)
     except Exception as erro:
         st.error(f"Não foi possível ler {banco.TREINAMENTO}: {erro}")
         df = pd.DataFrame()
@@ -109,7 +111,7 @@ def nova_lista(df: pd.DataFrame, usuario: dict) -> None:
             "DATA DO TREINAMENTO", value=date.today(), format="DD/MM/YYYY", key=f"tr_data_{v}"
         )
     with c3:
-        filial = campo_com_outro("FILIAL", opcoes_existentes(df, "filial"), f"tr_filial_{v}")
+        cod_filial, filial = acesso.campo_filial("FILIAL", f"tr_filial_{v}")
 
     c4, c5 = st.columns([1, 2.5])
     with c4:
@@ -118,10 +120,7 @@ def nova_lista(df: pd.DataFrame, usuario: dict) -> None:
             help="Deixe em branco se o treinamento não vence (DDS, campanha).",
         )
     with c5:
-        link = st.text_input(
-            "LINK DA EVIDÊNCIA (RQ 10 assinada)", key=f"tr_link_{v}",
-            placeholder="https://dellavolpe.sharepoint.com/...",
-        )
+        arquivo = evidencia.campo("RQ 10 ASSINADA (PDF ou foto)", f"tr_arquivo_{v}")
 
     titulo_secao(
         "2. Participantes",
@@ -133,7 +132,7 @@ def nova_lista(df: pd.DataFrame, usuario: dict) -> None:
     total = len(lista)
     rotulo = f"💾 Salvar lista de presença ({total} participante{'' if total == 1 else 's'})"
     if st.button(rotulo, type="primary", key=f"tr_salvar_{v}"):
-        salvar_lista(df, usuario, treinamento, data_tr, filial, validade, link, lista, rascunho)
+        salvar_lista(df, usuario, treinamento, data_tr, cod_filial, filial, validade, arquivo, lista, rascunho)
 
 
 def campos_participante(df: pd.DataFrame, lista: list, v: int) -> bool:
@@ -196,7 +195,7 @@ def lista_participantes(lista: list, v: int) -> None:
                              on_click=lista.pop, args=(i,))
 
 
-def salvar_lista(df, usuario, treinamento, data_tr, filial, validade, link, lista, rascunho) -> None:
+def salvar_lista(df, usuario, treinamento, data_tr, cod_filial, filial, validade, arquivo, lista, rascunho) -> None:
     erros = []
     if not treinamento:
         erros.append("Informe o treinamento.")
@@ -228,13 +227,19 @@ def salvar_lista(df, usuario, treinamento, data_tr, filial, validade, link, list
         **p,
         "data_treinamento": data_tr,
         "filial": filial,
+        "cod_filial": cod_filial,
         "treinamento": treinamento,
         "data_validade": validade,
-        "link_evidencia": texto(link),
+        "link_evidencia": None,
         "criado_por": usuario["email"],
     } for p in lista]
 
-    ok, msg = banco.inserir(banco.TREINAMENTO, linhas)
+    def salvar(caminho):
+        for linha in linhas:  # o mesmo arquivo vale para todos os participantes
+            linha["link_evidencia"] = caminho
+        return banco.inserir(banco.TREINAMENTO, linhas)
+
+    ok, msg = evidencia.gravar(arquivo, "treinamento", salvar)
     if not ok:
         st.error(msg)  # nada foi limpo: a lista continua na tela
         return
@@ -373,7 +378,7 @@ def editar(reg: pd.Series, df: pd.DataFrame) -> None:
             "TREINAMENTO", opcoes_existentes(df, "treinamento"), f"{k}_trein", reg["treinamento"]
         )
     with c5:
-        filial = campo_com_outro("FILIAL", opcoes_existentes(df, "filial"), f"{k}_filial", reg["filial"])
+        cod_filial, filial = acesso.campo_filial("FILIAL", f"{k}_filial", reg["cod_filial"])
     with c6:
         vinculo = campo_lista("VÍNCULO", VINCULOS, f"{k}_vinculo", reg["vinculo"])
 
@@ -388,7 +393,13 @@ def editar(reg: pd.Series, df: pd.DataFrame) -> None:
         validade = st.date_input(
             "VALIDADE", value=reg["data_validade"], format="DD/MM/YYYY", key=f"{k}_validade"
         )
-    link = st.text_input("LINK DA EVIDÊNCIA", value=texto(reg["link_evidencia"]) or "", key=f"{k}_link")
+    link_atual = texto(reg["link_evidencia"])
+    if link_atual:
+        evidencia.mostrar(link_atual)
+    arquivo = evidencia.campo(
+        "SUBSTITUIR EVIDÊNCIA (só deste participante)" if link_atual else "ANEXAR RQ 10 ASSINADA",
+        f"{k}_arquivo",
+    )
 
     confirmar = st.checkbox("Quero excluir este registro", key=f"{k}_confirma")
     b1, b2, _ = st.columns([1.4, 1, 4])
@@ -415,11 +426,12 @@ def editar(reg: pd.Series, df: pd.DataFrame) -> None:
             return
         dados = {
             "nome": texto(nome), "cpf": cpf_limpo, "data_treinamento": data_tr,
-            "filial": filial, "funcao": texto(funcao), "setor": texto(setor),
+            "filial": filial, "cod_filial": cod_filial, "funcao": texto(funcao), "setor": texto(setor),
             "treinamento": treinamento, "vinculo": vinculo, "data_validade": validade,
-            "avaliacao": avaliacao, "link_evidencia": texto(link),
+            "avaliacao": avaliacao, "link_evidencia": link_atual,
         }
-        concluir(banco.atualizar(banco.TREINAMENTO, rid, dados))
+        concluir(evidencia.gravar(arquivo, "treinamento", lambda caminho: banco.atualizar(
+            banco.TREINAMENTO, rid, {**dados, "link_evidencia": caminho or dados["link_evidencia"]})))
 
     if apagar:
         concluir(banco.excluir(banco.TREINAMENTO, rid))
