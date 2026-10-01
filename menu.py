@@ -13,6 +13,7 @@ from datetime import date
 
 import streamlit as st
 
+import acesso
 import pagina_acidente
 import pagina_plano_acao
 import pagina_treinamento
@@ -80,7 +81,7 @@ def html_cabecalho(usuario: dict) -> str:
         f'<p class="dv-bemvindo">Bem-vindo(a), {html.escape(usuario["nome"])} — '
         f'<b>{html.escape(usuario["email"])}</b></p>'
         '<div class="dv-pilulas">'
-        f'<span class="dv-pilula">{SVG_ESCUDO} Acesso: todas as filiais</span>'
+        f'<span class="dv-pilula">{SVG_ESCUDO} Acesso: {html.escape(acesso.descricao())}</span>'
         f'<span class="dv-pilula">{SVG_CALENDARIO} Hoje, {date.today():%d/%m/%Y}</span>'
         "</div></div>"
     )
