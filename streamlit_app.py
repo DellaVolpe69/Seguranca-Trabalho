@@ -38,6 +38,8 @@ st.markdown(CSS_BASE_CLARA, unsafe_allow_html=True)
 DOMINIO = "@dellavolpe.com.br"
 USUARIOS_AUTORIZADOS = {
     "anderson.junior@dellavolpe.com.br",
+    "pamela.santos@dellavolpe.com.br",
+    "Thayna.Paula@dellavolpe.com.br"
     # incluir aqui os e-mails do SESMT
 }
 
