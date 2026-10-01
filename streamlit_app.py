@@ -12,6 +12,7 @@ Arquivos:
   pagina_treinamento.py  RQ 10 → segtrabalho_treinamento
   pagina_acidente.py     Relatório de Acidente → segtrabalho_acidente
   pagina_plano_acao.py   Plano de ação → segtrabalho_plano_acao
+  evidencia.py           anexos no MinIO (bucket seguranca-trabalho)
 """
 
 import time
@@ -23,6 +24,7 @@ st.set_page_config(page_title="Segurança do Trabalho", page_icon="🦺", layout
 
 from requests_oauthlib import OAuth2Session  # noqa: E402
 
+import acesso  # noqa: E402
 import banco  # noqa: E402
 import menu  # noqa: E402
 from estilo import CSS_BASE_CLARA, CSS_INTERNO, CSS_LOGIN, URL_LOGO_BRANCO, sair  # noqa: E402
@@ -33,15 +35,9 @@ st.markdown(CSS_BASE_CLARA, unsafe_allow_html=True)
 # ================================================
 # CONTROLE DE ACESSO
 # ================================================
-# Quem pode entrar no app (além de ser @dellavolpe.com.br). O filtro por
-# filial ainda não existe: todos os autorizados veem todas as filiais.
+# Quem entra e quais filiais vê: acesso.py (ADMINS no código + tabela
+# segtrabalho_usuario). Além disso, só e-mail @dellavolpe.com.br.
 DOMINIO = "@dellavolpe.com.br"
-USUARIOS_AUTORIZADOS = {
-    "anderson.junior@dellavolpe.com.br",
-    "pamela.santos@dellavolpe.com.br",
-    "Thayna.Paula@dellavolpe.com.br"
-    # incluir aqui os e-mails do SESMT
-}
 
 
 # ================================================
@@ -142,17 +138,22 @@ def autenticar() -> dict:
 
 usuario = autenticar()
 
-if not usuario["email"].endswith(DOMINIO) or usuario["email"] not in USUARIOS_AUTORIZADOS:
-    st.markdown(CSS_INTERNO, unsafe_allow_html=True)
-    st.error("Seu usuário não tem acesso a este app. Fale com o SESMT.")
-    st.caption(f"E-mail identificado: {usuario['email']}")
-    st.button("Sair", on_click=sair)
-    st.stop()
-
 url_sb, key_sb = banco.credenciais()
 if not url_sb or not key_sb:
     st.markdown(CSS_INTERNO, unsafe_allow_html=True)
     st.error("SUPABASE_URL e/ou SUPABASE_KEY não encontrados em st.secrets — nada vai gravar.")
+    st.stop()
+
+# Filiais do usuário: lidas uma vez por sessão (o "Sair" limpa)
+if "perfil" not in st.session_state:
+    st.session_state["perfil"] = acesso.carregar_perfil(usuario["email"])
+perfil = st.session_state["perfil"]
+
+if not usuario["email"].endswith(DOMINIO) or not (perfil["admin"] or perfil["codigos"]):
+    st.markdown(CSS_INTERNO, unsafe_allow_html=True)
+    st.error("Seu usuário não tem acesso a este app. Fale com o SESMT.")
+    st.caption(f"E-mail identificado: {usuario['email']}")
+    st.button("Sair", on_click=sair)
     st.stop()
 
 menu.rodar(usuario)
