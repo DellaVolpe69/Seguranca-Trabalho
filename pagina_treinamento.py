@@ -17,7 +17,7 @@ import streamlit as st
 import banco
 from comum import (
     garantir_colunas, FUNCOES_RQ05, VAZIO, campo_com_outro, campo_lista, csv_excel, erro_cpf, fmt_cpf,
-    guardar_msg, mostrar_erros, opcoes_existentes, para_data, para_numero,
+    guardar_msg, mostrar_erros, opcoes_existentes, para_data,
     render_msg, so_digitos, texto,
 )
 from estilo import (
@@ -29,9 +29,11 @@ PAGINAS = {
     "registros": "Registros",
 }
 VINCULOS = ["Frota", "Agregado", "Terceiro", "Interno"]
+# "Avaliação do treinamento" da RQ 10: as 3 carinhas 😊 😐 ☹️ (não é nota)
+AVALIACOES = ["Satisfeito", "Normal", "Insatisfeito"]
 COLUNAS = [
     "id", "nome", "cpf", "data_treinamento", "filial", "funcao", "setor",
-    "treinamento", "vinculo", "data_validade", "avaliacao_nota",
+    "treinamento", "vinculo", "data_validade", "avaliacao",
     "link_evidencia", "criado_em", "criado_por",
 ]
 MSG_NOVA = "tr_msg_nova"
@@ -153,11 +155,7 @@ def campos_participante(df: pd.DataFrame, lista: list, v: int) -> bool:
     with c5:
         vinculo = campo_lista("VÍNCULO", VINCULOS, f"{k}_vinculo")
     with c6:
-        nota = st.number_input(
-            "AVALIAÇÃO (0 a 10)", min_value=0.0, max_value=10.0, step=0.5, value=None,
-            placeholder="—", key=f"{k}_nota",
-            help="Nota da avaliação do treinamento. Deixe em branco se não houve avaliação.",
-        )
+        avaliacao = campo_lista("AVALIAÇÃO DO TREINAMENTO", AVALIACOES, f"{k}_aval")
 
     if st.button("➕ Adicionar participante", key=f"{k}_add"):
         cpf_limpo = so_digitos(cpf)
@@ -173,7 +171,7 @@ def campos_participante(df: pd.DataFrame, lista: list, v: int) -> bool:
         else:
             lista.append({
                 "nome": texto(nome), "cpf": cpf_limpo, "funcao": funcao, "setor": setor,
-                "vinculo": vinculo, "avaliacao_nota": nota,
+                "vinculo": vinculo, "avaliacao": avaliacao,
             })
             st.session_state["tr_pv"] += 1
             st.rerun()
@@ -187,10 +185,9 @@ def lista_participantes(lista: list, v: int) -> None:
         return
     with st.container(border=True):
         for i, p in enumerate(lista):
-            nota = VAZIO if p["avaliacao_nota"] is None else f"{p['avaliacao_nota']:.1f}".replace(".", ",")
             detalhes = " · ".join([
                 fmt_cpf(p["cpf"]), p["funcao"] or VAZIO, p["setor"] or VAZIO,
-                p["vinculo"] or VAZIO, f"avaliação {nota}",
+                p["vinculo"] or VAZIO, f"avaliação: {p['avaliacao'] or VAZIO}",
             ])
             texto_col, botao_col = st.columns([9, 1])
             texto_col.markdown(f"**{i + 1}. {p['nome']}**  \n{detalhes}")
@@ -293,15 +290,18 @@ def registros(df: pd.DataFrame) -> None:
             achou |= f["cpf"].astype(str).str.contains(digitos, regex=False, na=False)
         f = f[achou]
 
-    notas = f["avaliacao_nota"].dropna()
+    avaliadas = f["avaliacao"].dropna()
+    contagem = avaliadas.value_counts()
+    satisfeitos = int(contagem.get("Satisfeito", 0))
     vencidos = int((f["situacao"] == "Vencido").sum())
     vencendo = int((f["situacao"] == "Vence em 30 dias").sum())
     linha_cartoes([
         ("Participações", f"{len(f)}", "neutro", "linhas no filtro"),
         ("Pessoas treinadas", f"{f['cpf'].nunique()}", "verde", "CPFs distintos"),
         ("Treinamentos", f"{f['treinamento'].nunique()}", "neutro", "tipos distintos"),
-        ("Avaliação média", f"{notas.mean():.1f}".replace(".", ",") if len(notas) else VAZIO,
-         "neutro", f"{len(notas)} avaliações"),
+        ("Satisfeitos", f"{satisfeitos / len(avaliadas):.0%}" if len(avaliadas) else VAZIO, "verde",
+         " · ".join(f"{int(contagem.get(a, 0))} {a}" for a in AVALIACOES) if len(avaliadas)
+         else "sem avaliações"),
         ("Vencem em 30 dias", f"{vencendo}", "laranja" if vencendo else "neutro", ""),
         ("Vencidos", f"{vencidos}", "vermelho" if vencidos else "neutro", ""),
     ])
@@ -309,10 +309,10 @@ def registros(df: pd.DataFrame) -> None:
 
     tabela = f[[
         "id", "data_treinamento", "treinamento", "filial", "nome", "cpf", "funcao",
-        "setor", "vinculo", "avaliacao_nota", "data_validade", "situacao",
+        "setor", "vinculo", "avaliacao", "data_validade", "situacao",
     ]].copy()
     tabela["cpf"] = tabela["cpf"].map(fmt_cpf)
-    textos = ["treinamento", "filial", "nome", "funcao", "setor", "vinculo"]
+    textos = ["treinamento", "filial", "nome", "funcao", "setor", "vinculo", "avaliacao"]
     tabela[textos] = tabela[textos].fillna("")  # vazio em vez de "None" na tela
 
     versao_tabela = st.session_state.setdefault("tr_tabela_v", 0)
@@ -333,7 +333,7 @@ def registros(df: pd.DataFrame) -> None:
             "funcao": "FUNÇÃO",
             "setor": "SETOR",
             "vinculo": "VÍNCULO",
-            "avaliacao_nota": st.column_config.NumberColumn("AVALIAÇÃO", format="%.1f"),
+            "avaliacao": "AVALIAÇÃO",
             "data_validade": st.column_config.DateColumn("VALIDADE", format="DD/MM/YYYY"),
             "situacao": "SITUAÇÃO",
         },
@@ -383,10 +383,7 @@ def editar(reg: pd.Series, df: pd.DataFrame) -> None:
     with c8:
         setor = campo_com_outro("SETOR", opcoes_existentes(df, "setor"), f"{k}_setor", reg["setor"])
     with c9:
-        nota = st.number_input(
-            "AVALIAÇÃO (0–10)", min_value=0.0, max_value=10.0, step=0.5,
-            value=para_numero(reg["avaliacao_nota"]), key=f"{k}_nota",
-        )
+        avaliacao = campo_lista("AVALIAÇÃO", AVALIACOES, f"{k}_aval", reg["avaliacao"])
     with c10:
         validade = st.date_input(
             "VALIDADE", value=reg["data_validade"], format="DD/MM/YYYY", key=f"{k}_validade"
@@ -420,7 +417,7 @@ def editar(reg: pd.Series, df: pd.DataFrame) -> None:
             "nome": texto(nome), "cpf": cpf_limpo, "data_treinamento": data_tr,
             "filial": filial, "funcao": texto(funcao), "setor": texto(setor),
             "treinamento": treinamento, "vinculo": vinculo, "data_validade": validade,
-            "avaliacao_nota": nota, "link_evidencia": texto(link),
+            "avaliacao": avaliacao, "link_evidencia": texto(link),
         }
         concluir(banco.atualizar(banco.TREINAMENTO, rid, dados))
 
