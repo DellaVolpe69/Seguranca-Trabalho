@@ -10,7 +10,9 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
+import acesso
 import banco
+import evidencia
 from comum import (
     garantir_colunas, VAZIO, campo_com_outro, campo_lista, campo_sim_nao, csv_excel, fmt_data,
     guardar_msg, mostrar_erros, opcoes_existentes, para_data, render_msg, texto,
@@ -29,7 +31,7 @@ SEM_ACIDENTE = "Sem acidente vinculado"
 COLUNAS = [
     "id", "acidente_id", "filial", "area", "plano_acao", "criticidade",
     "responsavel", "data_abertura", "prazo_final", "data_conclusao", "status",
-    "eficaz", "houve_reincidencia", "link_evidencia", "criado_em", "criado_por",
+    "eficaz", "houve_reincidencia", "link_evidencia", "cod_filial", "criado_em", "criado_por",
 ]
 MSG_NOVA = "pa_msg_nova"
 MSG_REG = "pa_msg_reg"
@@ -53,7 +55,7 @@ def tela(usuario: dict) -> None:
 
 def carregar() -> pd.DataFrame:
     try:
-        df = banco.listar(banco.PLANO_ACAO)
+        df = acesso.listar(banco.PLANO_ACAO)
     except Exception as erro:
         st.error(f"Não foi possível ler {banco.PLANO_ACAO}: {erro}")
         df = pd.DataFrame()
@@ -74,7 +76,7 @@ def ir_para_acidente() -> None:
 def carregar_acidentes() -> dict:
     """{id: rótulo} para vincular a ação a um acidente."""
     try:
-        df = banco.listar(banco.ACIDENTE)
+        df = acesso.listar(banco.ACIDENTE)
     except Exception as erro:
         st.warning(f"Não foi possível ler os acidentes ({banco.ACIDENTE}): {erro}")
         return {}
@@ -158,7 +160,7 @@ def campos_acao(df: pd.DataFrame, acidentes: dict, k: str, atual: dict) -> dict:
 
     c1, c2, c3 = st.columns([1.4, 1.4, 1])
     with c1:
-        filial = campo_com_outro("FILIAL", opcoes_existentes(df, "filial"), f"{k}_filial", atual.get("filial"))
+        cod_filial, filial = acesso.campo_filial("FILIAL", f"{k}_filial", atual.get("cod_filial"))
     with c2:
         area = campo_com_outro("ÁREA", opcoes_existentes(df, "area"), f"{k}_area", atual.get("area"))
     with c3:
@@ -201,14 +203,17 @@ def campos_acao(df: pd.DataFrame, acidentes: dict, k: str, atual: dict) -> dict:
                 "HOUVE REINCIDÊNCIA?", f"{k}_reinc", atual.get("houve_reincidencia")
             )
 
-    link = st.text_input(
-        "LINK DA EVIDÊNCIA", value=texto(atual.get("link_evidencia")) or "", key=f"{k}_link",
-        placeholder="https://dellavolpe.sharepoint.com/...",
+    link_atual = texto(atual.get("link_evidencia"))
+    if link_atual:
+        evidencia.mostrar(link_atual)
+    arquivo = evidencia.campo(
+        "SUBSTITUIR EVIDÊNCIA" if link_atual else "ANEXAR EVIDÊNCIA DA AÇÃO", f"{k}_arquivo"
     )
 
     return {
         "acidente_id": None if acidente == SEM_ACIDENTE else int(acidente),
         "filial": filial,
+        "cod_filial": cod_filial,
         "area": area,
         "plano_acao": texto(plano),
         "criticidade": criticidade,
@@ -219,7 +224,8 @@ def campos_acao(df: pd.DataFrame, acidentes: dict, k: str, atual: dict) -> dict:
         "status": status,
         "eficaz": eficaz,
         "houve_reincidencia": reincidencia,
-        "link_evidencia": texto(link),
+        "link_evidencia": link_atual,
+        "_arquivo": arquivo,  # não é coluna: sai antes de gravar
     }
 
 
@@ -265,7 +271,9 @@ def nova_acao(df: pd.DataFrame, acidentes: dict, usuario: dict) -> None:
             mostrar_erros(erros)
             return
         dados["criado_por"] = usuario["email"]
-        ok, msg = banco.inserir(banco.PLANO_ACAO, [dados])
+        arquivo = dados.pop("_arquivo")
+        ok, msg = evidencia.gravar(arquivo, "plano_acao", lambda caminho: banco.inserir(
+            banco.PLANO_ACAO, [{**dados, "link_evidencia": caminho or dados["link_evidencia"]}]))
         if not ok:
             st.error(msg)
             return
@@ -390,7 +398,9 @@ def editar(reg: pd.Series, df: pd.DataFrame, acidentes: dict) -> None:
         if erros:
             mostrar_erros(erros)
             return
-        concluir(banco.atualizar(banco.PLANO_ACAO, rid, dados))
+        arquivo = dados.pop("_arquivo")
+        concluir(evidencia.gravar(arquivo, "plano_acao", lambda caminho: banco.atualizar(
+            banco.PLANO_ACAO, rid, {**dados, "link_evidencia": caminho or dados["link_evidencia"]})))
     if apagar:
         concluir(banco.excluir(banco.PLANO_ACAO, rid))
 
