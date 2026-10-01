@@ -256,7 +256,8 @@ def validar(d: dict) -> list:
 def nova_acao(df: pd.DataFrame, acidentes: dict, usuario: dict) -> None:
     v = st.session_state.setdefault("pa_versao", 0)
     render_msg(MSG_NOVA)
-    dados = campos_acao(df, acidentes, f"pa_nova_{v}", {})
+    # vindo de "➕ Nova ação para este acidente": acidente e filial já preenchidos
+    dados = campos_acao(df, acidentes, f"pa_nova_{v}", st.session_state.pop("pa_prefill", {}))
 
     if st.button("💾 Salvar ação", type="primary", key=f"pa_salvar_{v}"):
         erros = validar(dados)
