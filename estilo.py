@@ -623,7 +623,7 @@ def barra_paginas_lateral(estado: str, paginas: dict, prefixo: str) -> str:
 
 def sair() -> None:
     """Esquece o login desta sessão; o próximo rerun cai na tela de login."""
-    for chave in ("token", "usuario", "tela"):
+    for chave in ("token", "usuario", "tela", "perfil"):
         st.session_state.pop(chave, None)
 
 
