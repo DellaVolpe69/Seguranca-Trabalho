@@ -8,3 +8,4 @@ requests-oauthlib
 office365-rest-python-client
 openpyxl
 git+https://github.com/DellaVolpe69/Modulos.git@main
+qrcode>=7.4
