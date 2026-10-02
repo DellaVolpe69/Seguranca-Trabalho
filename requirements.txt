@@ -1,7 +1,7 @@
 streamlit
 pandas
 supabase
-minio==7.1.2
+minio==7.2.20
 pyarrow
 python-dotenv
 requests-oauthlib
