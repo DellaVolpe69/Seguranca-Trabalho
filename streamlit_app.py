@@ -10,6 +10,7 @@ Arquivos:
   banco.py               leitura/gravação no Supabase
   comum.py               utilitários de tela (CPF, datas, campos)
   pagina_treinamento.py  RQ 10 → segtrabalho_treinamento
+  pagina_presenca.py     tela do QR Code (sem login): participante se registra
   pagina_acidente.py     Relatório de Acidente → segtrabalho_acidente
   pagina_plano_acao.py   Plano de ação → segtrabalho_plano_acao
   evidencia.py           anexos no MinIO (bucket seguranca-trabalho)
@@ -27,6 +28,7 @@ from requests_oauthlib import OAuth2Session  # noqa: E402
 import acesso  # noqa: E402
 import banco  # noqa: E402
 import menu  # noqa: E402
+import pagina_presenca  # noqa: E402
 from estilo import CSS_BASE_CLARA, CSS_INTERNO, CSS_LOGIN, URL_LOGO_BRANCO, sair  # noqa: E402
 
 st.markdown(CSS_BASE_CLARA, unsafe_allow_html=True)
@@ -135,6 +137,13 @@ def autenticar() -> dict:
         }
     return st.session_state["usuario"]
 
+
+# Presença por QR Code: a única tela sem login (motorista agregado e terceiro
+# não têm conta da empresa). Só registra a pessoa na lista aberta pelo TST.
+codigo_presenca = st.query_params.get("presenca")
+if codigo_presenca:
+    pagina_presenca.tela(codigo_presenca)
+    st.stop()
 
 usuario = autenticar()
 
