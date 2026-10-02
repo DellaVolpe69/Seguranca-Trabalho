@@ -19,6 +19,8 @@ import streamlit as st
 TREINAMENTO = "segtrabalho_treinamento"
 PLANO_ACAO = "segtrabalho_plano_acao"
 ACIDENTE = "segtrabalho_acidente"
+USUARIO = "segtrabalho_usuario"
+SESSAO = "segtrabalho_treinamento_sessao"  # lista de presença aberta por QR Code
 
 # O PostgREST devolve no máximo 1000 linhas por requisição; acima disso a
 # lista vinha cortada sem aviso. listar() pagina até acabar.
@@ -118,6 +120,18 @@ def listar(tabela: str) -> pd.DataFrame:
     return pd.DataFrame(linhas)
 
 
+def buscar(tabela: str, **filtros) -> list:
+    """Linhas com coluna = valor (None = vazio), direto do banco, sem cache.
+
+    Para o que muda a cada segundo — a lista de presença aberta por QR Code —
+    e para não ler a tabela inteira só para achar uma linha.
+    """
+    consulta = conectar().table(tabela).select("*")
+    for coluna, valor in filtros.items():
+        consulta = consulta.is_(coluna, "null") if valor is None else consulta.eq(coluna, valor)
+    return consulta.order("id").execute().data or []
+
+
 def inserir(tabela: str, linhas: list) -> tuple:
     """Insere todas as linhas num único comando: ou grava tudo, ou nada."""
     try:
@@ -139,6 +153,16 @@ def atualizar(tabela: str, id_registro, dados: dict) -> tuple:
     if not resposta.data:
         return False, f"Nenhuma linha alterada (registro #{id_registro} não encontrado)."
     return True, f"Registro #{id_registro} alterado."
+
+
+def atualizar_onde(tabela: str, coluna: str, valor, dados: dict) -> tuple:
+    """Altera todas as linhas com coluna = valor (ex.: a evidência de uma lista inteira)."""
+    try:
+        resposta = conectar().table(tabela).update(json_seguro(dados)).eq(coluna, valor).execute()
+    except Exception as erro:
+        return False, f"Não alterou: {erro}"
+    listar.clear()
+    return True, f"{len(resposta.data or [])} registro(s) alterado(s)."
 
 
 def excluir(tabela: str, id_registro) -> tuple:
