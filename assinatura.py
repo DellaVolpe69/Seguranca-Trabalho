@@ -182,16 +182,26 @@ export default function (component) {
 }
 """
 
-_QUADRO = st.components.v2.component("dv_assinatura", css=CSS, js=JS)
+def _registrar():
+    return st.components.v2.component("dv_assinatura", css=CSS, js=JS)
+
+
+_QUADRO = _registrar()
 
 
 def campo_assinatura(key: str):
     """Botão que abre o quadro em tela cheia. Devolve o PNG (bytes) da assinatura, ou None."""
+    global _QUADRO
     estado = f"{key}_png"
-    resultado = _QUADRO(
-        key=key, data={"feita": bool(st.session_state.get(estado)), "css": CSS_TELA_CHEIA},
-        on_assinatura_change=lambda: None,
-    )
+    argumentos = dict(key=key, data={"feita": bool(st.session_state.get(estado)), "css": CSS_TELA_CHEIA},
+                      on_assinatura_change=lambda: None)
+    try:
+        resultado = _QUADRO(**argumentos)
+    except Exception as erro:
+        if "not registered" not in str(erro):
+            raise
+        _QUADRO = _registrar()  # o Streamlit reiniciou e esqueceu o componente: registra de novo
+        resultado = _QUADRO(**argumentos)
     url = getattr(resultado, "assinatura", None)
     prefixo = "data:image/png;base64,"
     png = base64.b64decode(url[len(prefixo):]) if isinstance(url, str) and url.startswith(prefixo) else None
