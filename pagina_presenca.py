@@ -61,10 +61,41 @@ def tela(codigo: str) -> None:
         "O QUE ACHOU DO TREINAMENTO?", AVALIACOES, index=None, horizontal=True,
         format_func=CARINHAS.get, key=f"pr_aval_{v}",
     )
+    if st.query_params.get("assinatura") == "1":
+        assinatura_teste(v)
     st.caption("Nome e CPF são usados só para o registro deste treinamento pelo SESMT da Della Volpe.")
 
     if st.button("✅ Registrar minha presença", type="primary", key=f"pr_ok_{v}", width="stretch"):
         registrar(codigo, nome, cpf, funcao, setor, vinculo, avaliacao)
+
+
+def assinatura_teste(v: int) -> None:
+    """TESTE do quadro de assinatura — só aparece com &assinatura=1 no link e NÃO grava nada.
+
+    Serve para ver como o quadro se comporta no celular antes de criar a coluna
+    no Supabase. O import fica aqui dentro: se o componente falhar, só este
+    quadro some — a tela de presença continua funcionando.
+    """
+    try:
+        from streamlit_drawable_canvas import st_canvas
+    except Exception as erro:
+        st.warning(f"Quadro de assinatura indisponível: {erro}")
+        return
+    av = st.session_state.setdefault("pr_ass_v", 0)  # avança no "Limpar": quadro novo, em branco
+    st.markdown("**ASSINATURA** — assine com o dedo no quadro")
+    quadro = st_canvas(
+        stroke_width=3, stroke_color="#1F2A44", background_color="#FFFFFF",
+        height=160, width=320, drawing_mode="freedraw", return_image_data=True,
+        key=f"pr_assinatura_{v}_{av}",
+    )
+    tracos = len((quadro.json_data or {}).get("objects", []))
+    c1, c2 = st.columns([2, 1])
+    c1.caption(f"✍️ {tracos} traço(s). Teste: a assinatura ainda não é gravada." if tracos
+               else "Quadro em branco.")
+    c2.button("Limpar", key=f"pr_ass_limpar_{v}_{av}",
+              on_click=lambda: st.session_state.__setitem__("pr_ass_v", av + 1))
+    if tracos:
+        st.image(quadro.image_bytes, caption="Como ela ficaria salva", width=200)
 
 
 def registrar(codigo, nome, cpf, funcao, setor, vinculo, avaliacao) -> None:
