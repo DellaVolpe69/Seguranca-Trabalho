@@ -7,11 +7,17 @@ pelo login Microsoft. Quem escaneia o QR da lista aberta pelo TST
 A tela só faz uma coisa: incluir a própria pessoa naquele treinamento.
 Não mostra nada do banco — nem os outros participantes. O código é
 aleatório e deixa de valer quando o TST encerra a lista.
+
+A assinatura (assinatura.py) é obrigatória e vai para o MinIO como
+treinamento/assinaturas/NOME-TREINAMENTO-DD-MM-AAAA.png; o caminho fica em
+link_assinatura. Se o quadro não carregar no celular, a presença é aceita
+sem assinatura (melhor do que perder o registro).
 """
 
 import streamlit as st
 
 import banco
+import evidencia
 from comum import (
     FUNCOES_RQ05, campo_com_outro, campo_lista, erro_cpf, fmt_data, mostrar_erros, so_digitos, texto,
 )
@@ -61,39 +67,40 @@ def tela(codigo: str) -> None:
         "O QUE ACHOU DO TREINAMENTO?", AVALIACOES, index=None, horizontal=True,
         format_func=CARINHAS.get, key=f"pr_aval_{v}",
     )
-    if st.query_params.get("assinatura") == "1":
-        assinatura_teste(v)
+    quadro_ok, png = campo_assinatura(v)
     st.caption("Nome e CPF são usados só para o registro deste treinamento pelo SESMT da Della Volpe.")
 
     if st.button("✅ Registrar minha presença", type="primary", key=f"pr_ok_{v}", width="stretch"):
-        registrar(codigo, nome, cpf, funcao, setor, vinculo, avaliacao)
+        registrar(codigo, nome, cpf, funcao, setor, vinculo, avaliacao, png, quadro_ok)
 
 
-def assinatura_teste(v: int) -> None:
-    """TESTE do quadro de assinatura — só aparece com &assinatura=1 no link e NÃO grava nada.
+def campo_assinatura(v: int) -> tuple:
+    """(quadro carregou?, PNG da assinatura ou None).
 
-    Serve para ver como o quadro se comporta no celular antes de criar a coluna
-    no Supabase. O import fica aqui dentro: se o componente falhar, só este
-    quadro some — a tela de presença continua funcionando.
+    O import fica aqui dentro: se o componente falhar, só o quadro some — a
+    tela de presença continua funcionando.
     """
     try:
-        from assinatura import campo_assinatura
+        from assinatura import campo_assinatura as quadro
         st.markdown("**ASSINATURA**")
-        png = campo_assinatura(f"pr_assinatura_{v}")
+        png = quadro(f"pr_assinatura_{v}")
     except Exception as erro:
         st.warning(f"Quadro de assinatura indisponível: {erro}")
-        return
+        return False, None
     if png:
-        st.image(png, caption="Como ela ficaria salva (teste: ainda não é gravada)", width=220)
+        st.image(png, caption="Sua assinatura", width=220)
+    return True, png
 
 
-def registrar(codigo, nome, cpf, funcao, setor, vinculo, avaliacao) -> None:
+def registrar(codigo, nome, cpf, funcao, setor, vinculo, avaliacao, png, quadro_ok) -> None:
     cpf = so_digitos(cpf)
     erros = []
     if not texto(nome):
         erros.append("Informe o seu nome completo.")
     if erro_cpf(cpf):
         erros.append(erro_cpf(cpf))
+    if quadro_ok and not png:
+        erros.append("Assine no quadro: toque em ✍️ Toque para assinar.")
     if erros:
         mostrar_erros(erros, "Confira antes de registrar:")
         return
@@ -106,6 +113,14 @@ def registrar(codigo, nome, cpf, funcao, setor, vinculo, avaliacao) -> None:
         st.info("Este CPF já está registrado nesta lista. Não precisa registrar de novo.")
         return
 
+    caminho = None
+    if png:
+        try:
+            caminho = evidencia.subir_assinatura(png, nome, sessao["treinamento"], sessao["data_treinamento"])
+        except Exception as erro:
+            st.error(f"Não foi possível salvar a assinatura. Tente de novo. ({erro})")
+            return
+
     ok, msg = banco.inserir(banco.TREINAMENTO, [{
         "nome": texto(nome), "cpf": cpf, "funcao": funcao, "setor": texto(setor),
         "vinculo": vinculo, "avaliacao": avaliacao,
@@ -113,9 +128,11 @@ def registrar(codigo, nome, cpf, funcao, setor, vinculo, avaliacao) -> None:
         "data_treinamento": sessao["data_treinamento"],
         "filial": sessao["filial"], "cod_filial": sessao["cod_filial"],
         "data_validade": sessao["data_validade"], "sessao_id": sessao["id"],
-        "criado_por": "QR Code",
+        "link_assinatura": caminho, "criado_por": "QR Code",
     }])
     if not ok:
+        if caminho:
+            evidencia.remover(caminho)  # sem registro, a assinatura não fica solta no MinIO
         st.error(msg)  # os campos continuam preenchidos para tentar de novo
         return
     st.session_state["pr_feito"] = texto(nome)
