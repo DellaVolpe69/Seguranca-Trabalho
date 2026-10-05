@@ -38,7 +38,8 @@ def tela(codigo: str) -> None:
         return
 
     st.markdown(f"## 🎓 {sessao['treinamento']}")
-    st.caption(f"Lista de presença · {fmt_data(sessao['data_treinamento'])} · {sessao['filial']}")
+    instrutor = f" · Instrutor: {sessao['instrutor']}" if sessao.get("instrutor") else ""
+    st.caption(f"Lista de presença · {fmt_data(sessao['data_treinamento'])} · {sessao['filial']}{instrutor}")
     if sessao.get("encerrada_em"):
         st.warning("Esta lista de presença já foi encerrada pelo instrutor.")
         return
@@ -88,7 +89,8 @@ def registrar(codigo, nome, cpf, funcao, setor, vinculo, avaliacao) -> None:
     ok, msg = banco.inserir(banco.TREINAMENTO, [{
         "nome": texto(nome), "cpf": cpf, "funcao": funcao, "setor": texto(setor),
         "vinculo": vinculo, "avaliacao": avaliacao,
-        "treinamento": sessao["treinamento"], "data_treinamento": sessao["data_treinamento"],
+        "treinamento": sessao["treinamento"], "instrutor": sessao.get("instrutor"),
+        "data_treinamento": sessao["data_treinamento"],
         "filial": sessao["filial"], "cod_filial": sessao["cod_filial"],
         "data_validade": sessao["data_validade"], "sessao_id": sessao["id"],
         "criado_por": "QR Code",
