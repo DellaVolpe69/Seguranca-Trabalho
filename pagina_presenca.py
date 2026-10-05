@@ -77,25 +77,14 @@ def assinatura_teste(v: int) -> None:
     quadro some — a tela de presença continua funcionando.
     """
     try:
-        from streamlit_drawable_canvas import st_canvas
+        from assinatura import campo_assinatura
+        st.markdown("**ASSINATURA**")
+        png = campo_assinatura(f"pr_assinatura_{v}")
     except Exception as erro:
         st.warning(f"Quadro de assinatura indisponível: {erro}")
         return
-    av = st.session_state.setdefault("pr_ass_v", 0)  # avança no "Limpar": quadro novo, em branco
-    st.markdown("**ASSINATURA** — assine com o dedo no quadro")
-    quadro = st_canvas(
-        stroke_width=3, stroke_color="#1F2A44", background_color="#FFFFFF",
-        height=160, width=320, drawing_mode="freedraw", return_image_data=True,
-        key=f"pr_assinatura_{v}_{av}",
-    )
-    tracos = len((quadro.json_data or {}).get("objects", []))
-    c1, c2 = st.columns([2, 1])
-    c1.caption(f"✍️ {tracos} traço(s). Teste: a assinatura ainda não é gravada." if tracos
-               else "Quadro em branco.")
-    c2.button("Limpar", key=f"pr_ass_limpar_{v}_{av}",
-              on_click=lambda: st.session_state.__setitem__("pr_ass_v", av + 1))
-    if tracos:
-        st.image(quadro.image_bytes, caption="Como ela ficaria salva", width=200)
+    if png:
+        st.image(png, caption="Como ela ficaria salva (teste: ainda não é gravada)", width=220)
 
 
 def registrar(codigo, nome, cpf, funcao, setor, vinculo, avaliacao) -> None:
