@@ -698,6 +698,7 @@ def registros(df: pd.DataFrame) -> None:
         "⬇️ Baixar CSV", csv_excel(tabela), file_name="treinamentos.csv",
         mime="text/csv", key="tr_csv",
     )
+    lista_pdf(f)
 
     linhas = evento.selection.rows
     if not linhas:
@@ -706,6 +707,60 @@ def registros(df: pd.DataFrame) -> None:
     registro = f.iloc[linhas[0]]
     st.divider()
     editar(registro, df)
+
+
+def lista_pdf(f: pd.DataFrame) -> None:
+    """Escolhe uma lista (treinamento + data + filial) do filtro e gera o PDF com as assinaturas."""
+    titulo_secao("📄 Lista de presença em PDF",
+                 "Escolha o treinamento e baixe a lista com nome, CPF, função, setor, avaliação e assinatura.")
+    grupos = (f.groupby(["treinamento", "data_treinamento", "filial"]).size()
+              .reset_index(name="total").sort_values("data_treinamento", ascending=False))
+    if grupos.empty:
+        st.caption("Nenhuma lista no filtro.")
+        return
+    por_rotulo = {
+        f"{g.treinamento} · {fmt_data(g.data_treinamento)} · {g.filial} "
+        f"({g.total} participante{'' if g.total == 1 else 's'})": g
+        for g in grupos.itertuples(index=False)
+    }
+    if st.session_state.get("tr_pdf_lista") not in por_rotulo:  # o filtro mudou e a lista sumiu
+        st.session_state.pop("tr_pdf_lista", None)
+    c1, c2 = st.columns([4, 1])
+    with c1:
+        rotulo = st.selectbox("LISTA", list(por_rotulo), key="tr_pdf_lista")
+    with c2:
+        st.write("")
+        gerar = st.button("📄 Gerar PDF", key="tr_pdf_gerar")
+
+    if gerar:
+        g = por_rotulo[rotulo]
+        linhas = f[(f["treinamento"] == g.treinamento) & (f["data_treinamento"] == g.data_treinamento)
+                   & (f["filial"] == g.filial)].sort_values("nome")
+        try:
+            import relatorio_pdf
+            with st.spinner("Montando o PDF e buscando as assinaturas..."):
+                assinaturas, faltando = {}, 0
+                for _, p in linhas.iterrows():
+                    if texto(p["link_assinatura"]):
+                        try:
+                            assinaturas[p["id"]] = evidencia.baixar(p["link_assinatura"])
+                        except Exception:
+                            faltando += 1
+                usuario = st.session_state.get("usuario", {}).get("email", "")
+                pdf = relatorio_pdf.lista_presenca(linhas, assinaturas, usuario)
+        except Exception as erro:
+            st.error(f"Não foi possível gerar o PDF: {erro}")
+            return
+        nome = evidencia.nome_legivel(g.treinamento, g.filial) + f"-{fmt_data(g.data_treinamento).replace('/', '-')}.pdf"
+        st.session_state["tr_pdf"] = (rotulo, nome, pdf, faltando)
+
+    pronto = st.session_state.get("tr_pdf")
+    if pronto and pronto[0] == rotulo:
+        _, nome, pdf, faltando = pronto
+        if faltando:
+            st.warning(f"{faltando} assinatura(s) não foram encontradas no MinIO e saíram em branco.")
+        st.download_button("⬇️ Baixar PDF", pdf, file_name=nome, mime="application/pdf",
+                           type="primary", key="tr_pdf_baixar")
 
 
 def editar(reg: pd.Series, df: pd.DataFrame) -> None:
