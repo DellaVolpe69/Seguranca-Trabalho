@@ -130,11 +130,8 @@ def nova_lista(df: pd.DataFrame, usuario: dict) -> None:
         "Importe uma planilha Excel com todos de uma vez, ou preencha os dados de uma pessoa "
         "e clique em ➕ Adicionar participante.",
     )
-    if treinamento and data_tr and filial:
-        importar_planilha(df, lista, v)
-    else:
-        st.caption("📥 Para importar os participantes de uma planilha Excel, "
-                   "preencha antes o treinamento, a data e a filial.")
+    faltando = [n for n, val in (("o treinamento", treinamento), ("a data", data_tr), ("a filial", filial)) if not val]
+    importar_planilha(df, lista, v, faltando)
     rascunho = campos_participante(df, lista, v)
     lista_participantes(lista, v)
 
@@ -188,14 +185,23 @@ def erros_treinamento(treinamento, data_tr, filial, validade) -> list:
     return erros
 
 
-def importar_planilha(df: pd.DataFrame, lista: list, v: int) -> None:
-    """Upload do xlsx: quem passa na validação entra na lista abaixo (dá para conferir e remover)."""
+def importar_planilha(df: pd.DataFrame, lista: list, v: int, faltando: list) -> None:
+    """Upload do xlsx: quem passa na validação entra na lista abaixo (dá para conferir e remover).
+
+    O quadro fica sempre à vista (o modelo dá para baixar a qualquer hora); o
+    upload só libera depois do treinamento, da data e da filial — é a eles que
+    os participantes da planilha ficam ligados.
+    """
     iv = st.session_state.setdefault("tr_iv", 0)  # avança a cada importação: limpa o campo do arquivo
     with st.container(border=True):
         st.markdown("**📥 Importar participantes de uma planilha Excel**")
+        if faltando:
+            lista_faltando = " e ".join([", ".join(faltando[:-1]), faltando[-1]] if len(faltando) > 1 else faltando)
+            st.caption(f"Para subir a planilha, preencha antes {lista_faltando} na seção 1.")
         c1, c2 = st.columns([3, 1])
         with c1:
-            arquivo = st.file_uploader("PLANILHA (.xlsx)", type=["xlsx"], key=f"tr_xlsx_{v}_{iv}")
+            arquivo = st.file_uploader("PLANILHA (.xlsx)", type=["xlsx"], key=f"tr_xlsx_{v}_{iv}",
+                                       disabled=bool(faltando))
         with c2:
             st.write("")
             st.download_button(
@@ -347,6 +353,8 @@ def lista_participantes(lista: list, v: int) -> None:
     if not lista:
         st.caption("Nenhum participante adicionado ainda.")
         return
+    st.markdown(f"**👥 Participantes desta lista: {len(lista)}** — confira e use 🗑️ para retirar quem "
+                "entrou errado. Nada é gravado até clicar em 💾 Salvar.")
     with st.container(border=True):
         for i, p in enumerate(lista):
             detalhes = " · ".join([
