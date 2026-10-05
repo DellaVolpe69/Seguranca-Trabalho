@@ -581,8 +581,13 @@ def registros(df: pd.DataFrame) -> None:
     f1, f2, f3, f4, f5 = st.columns([1.3, 1.6, 1, 0.9, 0.9])
     with f1:
         filiais = st.multiselect("FILIAL", opcoes_existentes(df, "filial"), key="tr_f_filial")
+    # o filtro de treinamento só oferece o que as filiais escolhidas realizaram
+    da_filial = df[df["filial"].isin(filiais)] if filiais else df
+    opcoes_trein = opcoes_existentes(da_filial, "treinamento")
+    # tira da seleção o treinamento que deixou de existir ao trocar de filial
+    st.session_state["tr_f_trein"] = [t for t in st.session_state.get("tr_f_trein", []) if t in opcoes_trein]
     with f2:
-        treinos = st.multiselect("TREINAMENTO", opcoes_existentes(df, "treinamento"), key="tr_f_trein")
+        treinos = st.multiselect("TREINAMENTO", opcoes_trein, key="tr_f_trein")
     with f3:
         vinculos = st.multiselect("VÍNCULO", VINCULOS, key="tr_f_vinculo")
     with f4:
