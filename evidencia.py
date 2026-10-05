@@ -13,6 +13,8 @@ MINIO_SECURE — o módulo do Modulos lê de st.secrets e conecta no import.
 """
 
 import io
+import re
+import unicodedata
 import uuid
 from pathlib import Path
 
@@ -20,7 +22,7 @@ import streamlit as st
 
 import banco  # noqa: F401 — clona o Modulos e o coloca no sys.path
 import Modulos.Minio.examples.MinIO as meu_minio
-from comum import texto
+from comum import para_data, texto
 
 BUCKET = "seguranca-trabalho"
 TIPOS = ["pdf", "jpg", "jpeg", "png"]
@@ -49,6 +51,43 @@ def subir(arquivo, pasta: str) -> str:
         content_type=arquivo.type or "application/octet-stream",
     )
     return caminho
+
+
+def nome_legivel(*partes) -> str:
+    """'José da Silva', 'NR-35 Altura' -> 'JOSE_DA_SILVA-NR_35_ALTURA': sem acento nem símbolo."""
+    limpas = []
+    for parte in partes:
+        s = unicodedata.normalize("NFKD", str(parte or ""))
+        s = "".join(c for c in s if not unicodedata.combining(c)).upper()
+        limpas.append(re.sub(r"[^A-Z0-9]+", "_", s).strip("_") or "SEM_NOME")
+    return "-".join(limpas)
+
+
+def subir_assinatura(png: bytes, nome: str, treinamento: str, data_treinamento) -> str:
+    """Grava a assinatura como treinamento/assinaturas/NOME-TREINAMENTO-DD-MM-AAAA.png.
+
+    Nome legível para achar no MinIO e na extração. Se já existir um arquivo
+    com esse nome (mesma pessoa, mesmo treinamento, mesmo dia), acrescenta -2, -3…
+    em vez de sobrescrever a assinatura anterior.
+    """
+    manager = _manager()
+    manager.create_bucket_if_not_exists(BUCKET)
+    data = para_data(data_treinamento)
+    base = f"treinamento/assinaturas/{nome_legivel(nome, treinamento)}-{data:%d-%m-%Y}"
+    caminho, n = f"{base}.png", 1
+    while _existe(manager, caminho):
+        n += 1
+        caminho = f"{base}-{n}.png"
+    manager.client.put_object(BUCKET, caminho, io.BytesIO(png), length=len(png), content_type="image/png")
+    return caminho
+
+
+def _existe(manager, caminho: str) -> bool:
+    try:
+        manager.client.stat_object(BUCKET, caminho)
+        return True
+    except Exception:
+        return False
 
 
 def remover(caminho: str) -> None:
@@ -83,19 +122,19 @@ def campo(rotulo: str, key: str, ajuda: str = None):
     )
 
 
-def mostrar(link) -> None:
+def mostrar(link, rotulo: str = "📎 Abrir evidência", vazio: str = "Nenhuma evidência anexada.") -> None:
     """Botão para abrir a evidência já gravada (MinIO ou link antigo do SharePoint)."""
     link = texto(link)
     if not link:
-        st.caption("Nenhuma evidência anexada.")
+        st.caption(vazio)
         return
     if link.startswith("http"):
-        st.link_button("📎 Abrir evidência", link)
+        st.link_button(rotulo, link)
         return
     try:
         # o bucket não é público: o link é gerado na hora e vale 1 hora
         url = _manager().generate_presigned_download_url(BUCKET, link, expires_hours=1)
     except Exception as erro:
-        st.caption(f"Evidência `{link}` — não foi possível gerar o link ({erro}).")
+        st.caption(f"`{link}` — não foi possível gerar o link ({erro}).")
         return
-    st.link_button("📎 Abrir evidência", url)
+    st.link_button(rotulo, url)
