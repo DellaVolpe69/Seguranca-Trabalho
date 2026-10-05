@@ -82,6 +82,16 @@ def subir_assinatura(png: bytes, nome: str, treinamento: str, data_treinamento) 
     return caminho
 
 
+def baixar(caminho: str) -> bytes:
+    """Conteúdo de um arquivo do bucket (ex.: a assinatura, para o PDF da lista)."""
+    resposta = _manager().client.get_object(BUCKET, caminho)
+    try:
+        return resposta.read()
+    finally:
+        resposta.close()
+        resposta.release_conn()
+
+
 def _existe(manager, caminho: str) -> bool:
     try:
         manager.client.stat_object(BUCKET, caminho)
