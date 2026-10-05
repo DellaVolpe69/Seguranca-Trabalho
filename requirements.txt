@@ -9,3 +9,4 @@ office365-rest-python-client
 openpyxl
 git+https://github.com/DellaVolpe69/Modulos.git@main
 qrcode>=7.4
+streamlit-drawable-canvas==0.13.0
