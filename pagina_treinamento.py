@@ -717,20 +717,57 @@ def registros(df: pd.DataFrame) -> None:
     editar(registro, df)
 
 
+CHAVE_LISTA = ["treinamento", "data_treinamento", "filial", "instrutor_chave", "lista_chave"]
+
+
+def chaves_de_lista(f: pd.DataFrame) -> pd.DataFrame:
+    """Marca a qual lista cada linha pertence.
+
+    Mesmo treinamento, dia e filial pode ter turmas diferentes (outro
+    instrutor, manhã e tarde). Uma lista é: o QR Code que a gerou
+    (sessao_id) ou, se foi lançada à mão / por Excel, o momento do "Salvar"
+    — todas as linhas de um mesmo Salvar são gravadas com o mesmo criado_em.
+    """
+    lista = f["sessao_id"].map(lambda s: f"qr-{int(s)}" if pd.notna(s) else None)
+    return f.assign(
+        instrutor_chave=f["instrutor"].map(lambda i: texto(i) or ""),
+        lista_chave=lista.fillna(f["criado_em"].astype(str)),
+    )
+
+
+def hora_local(criado_em) -> str:
+    try:
+        return pd.to_datetime(criado_em, utc=True).tz_convert("America/Sao_Paulo").strftime("%H:%M")
+    except Exception:
+        return ""
+
+
 def lista_pdf(f: pd.DataFrame) -> None:
-    """Escolhe uma lista (treinamento + data + filial) do filtro e gera o PDF com as assinaturas."""
+    """Escolhe uma lista (treinamento + data + filial + instrutor + turma) e gera o PDF com as assinaturas."""
     titulo_secao("📄 Lista de presença em PDF",
                  "Escolha o treinamento e baixe a lista com nome, CPF, função, setor, avaliação e assinatura.")
-    grupos = (f.groupby(["treinamento", "data_treinamento", "filial"]).size()
-              .reset_index(name="total").sort_values("data_treinamento", ascending=False))
+    base = chaves_de_lista(f)
+    grupos = (base.groupby(CHAVE_LISTA).agg(total=("id", "size"), criado=("criado_em", "min"))
+              .reset_index().sort_values(["data_treinamento", "criado"], ascending=False))
     if grupos.empty:
         st.caption("Nenhuma lista no filtro.")
         return
-    por_rotulo = {
-        f"{g.treinamento} · {fmt_data(g.data_treinamento)} · {g.filial} "
-        f"({g.total} participante{'' if g.total == 1 else 's'})": g
-        for g in grupos.itertuples(index=False)
-    }
+
+    def rotulo_de(g) -> str:
+        return (f"{g.treinamento} · {fmt_data(g.data_treinamento)} · {g.filial} · "
+                f"instrutor: {g.instrutor_chave or 'não informado'} "
+                f"({g.total} participante{'' if g.total == 1 else 's'})")
+
+    rotulos = [rotulo_de(g) for g in grupos.itertuples(index=False)]
+    por_rotulo = {}
+    for rotulo, g in zip(rotulos, grupos.itertuples(index=False)):
+        if rotulos.count(rotulo) > 1:  # turmas iguais em tudo: separa pela hora em que a lista foi salva
+            origem = "QR Code" if g.lista_chave.startswith("qr-") else "lançada"
+            rotulo = f"{rotulo} · {origem} às {hora_local(g.criado)}"
+        unico, n = rotulo, 2
+        while unico in por_rotulo:  # salvas no mesmo minuto: numera a turma
+            unico, n = f"{rotulo} (turma {n})", n + 1
+        por_rotulo[unico] = g
     if st.session_state.get("tr_pdf_lista") not in por_rotulo:  # o filtro mudou e a lista sumiu
         st.session_state.pop("tr_pdf_lista", None)
     c1, c2 = st.columns([4, 1])
@@ -742,8 +779,10 @@ def lista_pdf(f: pd.DataFrame) -> None:
 
     if gerar:
         g = por_rotulo[rotulo]
-        linhas = f[(f["treinamento"] == g.treinamento) & (f["data_treinamento"] == g.data_treinamento)
-                   & (f["filial"] == g.filial)].sort_values("nome")
+        mesma_lista = True
+        for coluna in CHAVE_LISTA:
+            mesma_lista &= base[coluna] == getattr(g, coluna)
+        linhas = base[mesma_lista].sort_values("nome")
         try:
             import relatorio_pdf
             with st.spinner("Montando o PDF e buscando as assinaturas..."):
@@ -759,7 +798,8 @@ def lista_pdf(f: pd.DataFrame) -> None:
         except Exception as erro:
             st.error(f"Não foi possível gerar o PDF: {erro}")
             return
-        nome = evidencia.nome_legivel(g.treinamento, g.filial) + f"-{fmt_data(g.data_treinamento).replace('/', '-')}.pdf"
+        partes = [g.treinamento, g.filial] + ([g.instrutor_chave] if g.instrutor_chave else [])
+        nome = evidencia.nome_legivel(*partes) + f"-{fmt_data(g.data_treinamento).replace('/', '-')}.pdf"
         st.session_state["tr_pdf"] = (rotulo, nome, pdf, faltando)
 
     pronto = st.session_state.get("tr_pdf")
