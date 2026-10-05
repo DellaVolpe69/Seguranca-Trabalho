@@ -43,7 +43,7 @@ VINCULOS = ["Frota", "Agregado", "Terceiro", "Interno"]
 AVALIACOES = ["Satisfeito", "Normal", "Insatisfeito"]
 COLUNAS = [
     "id", "nome", "cpf", "data_treinamento", "filial", "funcao", "setor",
-    "treinamento", "vinculo", "data_validade", "avaliacao",
+    "treinamento", "instrutor", "vinculo", "data_validade", "avaliacao",
     "link_evidencia", "cod_filial", "sessao_id", "criado_em", "criado_por",
 ]
 # Planilha de participantes (paliativo enquanto a leitura da RQ 10 escaneada está em stand-by)
@@ -115,10 +115,12 @@ def nova_lista(df: pd.DataFrame, usuario: dict) -> None:
     titulo_secao("1. Treinamento", "O que foi aplicado, quando e em qual filial.")
     treinamento, data_tr, cod_filial, filial = campos_treinamento(df, f"tr_{v}")
 
-    c4, c5 = st.columns([1, 2.5])
+    c4, c5, c6 = st.columns([1, 1.5, 2])
     with c4:
         validade = campo_validade(f"tr_validade_{v}")
     with c5:
+        instrutor = campo_instrutor(df, f"tr_instrutor_{v}")
+    with c6:
         arquivo = evidencia.campo("RQ 10 ASSINADA (PDF ou foto)", f"tr_arquivo_{v}")
 
     titulo_secao(
@@ -137,7 +139,8 @@ def nova_lista(df: pd.DataFrame, usuario: dict) -> None:
     total = len(lista)
     rotulo = f"💾 Salvar lista de presença ({total} participante{'' if total == 1 else 's'})"
     if st.button(rotulo, type="primary", key=f"tr_salvar_{v}"):
-        salvar_lista(df, usuario, treinamento, data_tr, cod_filial, filial, validade, arquivo, lista, rascunho)
+        salvar_lista(df, usuario, treinamento, data_tr, cod_filial, filial, validade, instrutor,
+                     arquivo, lista, rascunho)
 
 
 def campos_treinamento(df: pd.DataFrame, k: str) -> tuple:
@@ -153,6 +156,14 @@ def campos_treinamento(df: pd.DataFrame, k: str) -> tuple:
     with c3:
         cod_filial, filial = acesso.campo_filial("FILIAL", f"{k}_filial")
     return treinamento, data_tr, cod_filial, filial
+
+
+def campo_instrutor(df: pd.DataFrame, key: str, valor_atual=None):
+    """Lista com os instrutores já usados: o mesmo nome sempre igual, para medir quem mais treina."""
+    return campo_com_outro(
+        "INSTRUTOR", opcoes_existentes(df, "instrutor"), key, valor_atual,
+        ajuda="Quem aplicou o treinamento. Se não estiver na lista, escolha OUTRO e digite o nome.",
+    )
 
 
 def campo_validade(key: str):
@@ -347,7 +358,8 @@ def lista_participantes(lista: list, v: int) -> None:
                              on_click=lista.pop, args=(i,))
 
 
-def salvar_lista(df, usuario, treinamento, data_tr, cod_filial, filial, validade, arquivo, lista, rascunho) -> None:
+def salvar_lista(df, usuario, treinamento, data_tr, cod_filial, filial, validade, instrutor,
+                 arquivo, lista, rascunho) -> None:
     erros = erros_treinamento(treinamento, data_tr, filial, validade)
     if rascunho:
         erros.append("Há um participante preenchido que não entrou na lista: clique em "
@@ -373,6 +385,7 @@ def salvar_lista(df, usuario, treinamento, data_tr, cod_filial, filial, validade
         "filial": filial,
         "cod_filial": cod_filial,
         "treinamento": treinamento,
+        "instrutor": instrutor,
         "data_validade": validade,
         "link_evidencia": None,
         "criado_por": usuario["email"],
@@ -429,9 +442,11 @@ def abrir_lista(df: pd.DataFrame, usuario: dict) -> None:
     titulo_secao("1. Treinamento", "Preencha e gere o QR Code. Os participantes escaneiam e "
                                    "se registram no próprio celular.")
     treinamento, data_tr, cod_filial, filial = campos_treinamento(df, f"tr_qr_{v}")
-    c1, _ = st.columns([1, 2.5])
+    c1, c2, _ = st.columns([1, 1.5, 2])
     with c1:
         validade = campo_validade(f"tr_qr_{v}_validade")
+    with c2:
+        instrutor = campo_instrutor(df, f"tr_qr_{v}_instrutor")
 
     if not st.button("📱 Gerar QR Code da lista", type="primary", key=f"tr_qr_{v}_gerar"):
         return
@@ -443,7 +458,7 @@ def abrir_lista(df: pd.DataFrame, usuario: dict) -> None:
     ok, msg = banco.inserir(banco.SESSAO, [{
         "codigo": codigo, "treinamento": treinamento, "data_treinamento": data_tr,
         "filial": filial, "cod_filial": cod_filial, "data_validade": validade,
-        "criado_por": usuario["email"],
+        "instrutor": instrutor, "criado_por": usuario["email"],
     }])
     if not ok:
         st.error(msg)
@@ -484,7 +499,8 @@ def acompanhar(sessao: dict) -> None:
     titulo_secao(
         f"📱 {sessao['treinamento']}",
         f"{fmt_data(sessao['data_treinamento'])} · {sessao['filial']} · validade: "
-        f"{fmt_data(sessao['data_validade']) or 'sem validade'} · aberta por {sessao['criado_por']}",
+        f"{fmt_data(sessao['data_validade']) or 'sem validade'} · instrutor: "
+        f"{sessao.get('instrutor') or VAZIO} · aberta por {sessao['criado_por']}",
     )
     link = link_presenca(sessao["codigo"])
     c1, c2 = st.columns([1, 1.6])
@@ -594,7 +610,11 @@ def registros(df: pd.DataFrame) -> None:
         de = st.date_input("DE", value=None, format="DD/MM/YYYY", key="tr_f_de")
     with f5:
         ate = st.date_input("ATÉ", value=None, format="DD/MM/YYYY", key="tr_f_ate")
-    busca = st.text_input("BUSCAR NOME OU CPF", key="tr_f_busca")
+    f6, f7 = st.columns([1.3, 4.4])
+    with f6:
+        instrutores = st.multiselect("INSTRUTOR", opcoes_existentes(df, "instrutor"), key="tr_f_instrutor")
+    with f7:
+        busca = st.text_input("BUSCAR NOME OU CPF", key="tr_f_busca")
 
     f = df
     if filiais:
@@ -603,6 +623,8 @@ def registros(df: pd.DataFrame) -> None:
         f = f[f["treinamento"].isin(treinos)]
     if vinculos:
         f = f[f["vinculo"].isin(vinculos)]
+    if instrutores:
+        f = f[f["instrutor"].isin(instrutores)]
     if de:
         f = f[f["data_treinamento"] >= de]
     if ate:
@@ -632,11 +654,11 @@ def registros(df: pd.DataFrame) -> None:
     st.write("")
 
     tabela = f[[
-        "id", "data_treinamento", "treinamento", "filial", "nome", "cpf", "funcao",
+        "id", "data_treinamento", "treinamento", "instrutor", "filial", "nome", "cpf", "funcao",
         "setor", "vinculo", "avaliacao", "data_validade", "situacao",
     ]].copy()
     tabela["cpf"] = tabela["cpf"].map(fmt_cpf)
-    textos = ["treinamento", "filial", "nome", "funcao", "setor", "vinculo", "avaliacao"]
+    textos = ["treinamento", "instrutor", "filial", "nome", "funcao", "setor", "vinculo", "avaliacao"]
     tabela[textos] = tabela[textos].fillna("")  # vazio em vez de "None" na tela
 
     versao_tabela = st.session_state.setdefault("tr_tabela_v", 0)
@@ -651,6 +673,7 @@ def registros(df: pd.DataFrame) -> None:
             "id": st.column_config.NumberColumn("ID", format="%d", width="small"),
             "data_treinamento": st.column_config.DateColumn("DATA", format="DD/MM/YYYY"),
             "treinamento": "TREINAMENTO",
+            "instrutor": "INSTRUTOR",
             "filial": "FILIAL",
             "nome": "NOME",
             "cpf": "CPF",
@@ -691,17 +714,19 @@ def editar(reg: pd.Series, df: pd.DataFrame) -> None:
             "DATA DO TREINAMENTO", value=reg["data_treinamento"], format="DD/MM/YYYY", key=f"{k}_data"
         )
 
-    c4, c5, c6 = st.columns([2, 1.5, 1])
+    c4, c5, c6 = st.columns([2, 1.5, 1.5])
     with c4:
         treinamento = campo_com_outro(
             "TREINAMENTO", opcoes_existentes(df, "treinamento"), f"{k}_trein", reg["treinamento"]
         )
     with c5:
-        cod_filial, filial = acesso.campo_filial("FILIAL", f"{k}_filial", reg["cod_filial"])
+        instrutor = campo_instrutor(df, f"{k}_instrutor", reg["instrutor"])
     with c6:
-        vinculo = campo_lista("VÍNCULO", VINCULOS, f"{k}_vinculo", reg["vinculo"])
+        cod_filial, filial = acesso.campo_filial("FILIAL", f"{k}_filial", reg["cod_filial"])
 
-    c7, c8, c9, c10 = st.columns(4)
+    c7, c8, c11, c9, c10 = st.columns(5)
+    with c11:
+        vinculo = campo_lista("VÍNCULO", VINCULOS, f"{k}_vinculo", reg["vinculo"])
     with c7:
         funcao = campo_com_outro("FUNÇÃO", opcoes_funcao(df), f"{k}_funcao", reg["funcao"])
     with c8:
@@ -746,7 +771,7 @@ def editar(reg: pd.Series, df: pd.DataFrame) -> None:
         dados = {
             "nome": texto(nome), "cpf": cpf_limpo, "data_treinamento": data_tr,
             "filial": filial, "cod_filial": cod_filial, "funcao": texto(funcao), "setor": texto(setor),
-            "treinamento": treinamento, "vinculo": vinculo, "data_validade": validade,
+            "treinamento": treinamento, "instrutor": instrutor, "vinculo": vinculo, "data_validade": validade,
             "avaliacao": avaliacao, "link_evidencia": link_atual,
         }
         concluir(evidencia.gravar(arquivo, "treinamento", lambda caminho: banco.atualizar(
