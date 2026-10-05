@@ -44,7 +44,7 @@ AVALIACOES = ["Satisfeito", "Normal", "Insatisfeito"]
 COLUNAS = [
     "id", "nome", "cpf", "data_treinamento", "filial", "funcao", "setor",
     "treinamento", "instrutor", "vinculo", "data_validade", "avaliacao",
-    "link_evidencia", "cod_filial", "sessao_id", "criado_em", "criado_por",
+    "link_evidencia", "link_assinatura", "cod_filial", "sessao_id", "criado_em", "criado_por",
 ]
 # Planilha de participantes (paliativo enquanto a leitura da RQ 10 escaneada está em stand-by)
 COLUNAS_PLANILHA = ["NOME", "CPF", "FUNÇÃO", "SETOR", "VÍNCULO", "AVALIAÇÃO"]
@@ -89,6 +89,8 @@ def situacao_validade(validade, hoje: date) -> str:
         return "Sem validade"
     if validade < hoje:
         return "Vencido"
+    if validade < hoje + timedelta(days=7):
+        return "Vence em 7 dias"
     if validade < hoje + timedelta(days=30):
         return "Vence em 30 dias"
     return "Válido"
@@ -537,10 +539,13 @@ def participantes_ao_vivo(sessao_id: int) -> None:
     if not linhas:
         st.caption("Ninguém se registrou ainda.")
         return
-    tabela = pd.DataFrame(linhas)[["nome", "cpf", "funcao", "vinculo", "avaliacao"]]
+    tabela = garantir_colunas(pd.DataFrame(linhas), ["link_assinatura"])
+    tabela["assinou"] = tabela["link_assinatura"].map(lambda l: "✍️ Sim" if texto(l) else "—")
+    tabela = tabela[["nome", "cpf", "funcao", "vinculo", "avaliacao", "assinou"]]
     tabela["cpf"] = tabela["cpf"].map(fmt_cpf)
     st.dataframe(tabela.fillna(""), hide_index=True, width="stretch", column_config={
         "nome": "NOME", "cpf": "CPF", "funcao": "FUNÇÃO", "vinculo": "VÍNCULO", "avaliacao": "AVALIAÇÃO",
+        "assinou": "ASSINOU",
     })
 
     rv = st.session_state.setdefault("tr_qr_rm_v", 0)  # avança a cada remoção: limpa a escolha
@@ -640,6 +645,7 @@ def registros(df: pd.DataFrame) -> None:
     contagem = avaliadas.value_counts()
     satisfeitos = int(contagem.get("Satisfeito", 0))
     vencidos = int((f["situacao"] == "Vencido").sum())
+    vence_7 = int((f["situacao"] == "Vence em 7 dias").sum())
     vencendo = int((f["situacao"] == "Vence em 30 dias").sum())
     linha_cartoes([
         ("Participações", f"{len(f)}", "neutro", "linhas no filtro"),
@@ -648,16 +654,18 @@ def registros(df: pd.DataFrame) -> None:
         ("Satisfeitos", f"{satisfeitos / len(avaliadas):.0%}" if len(avaliadas) else VAZIO, "verde",
          " · ".join(f"{int(contagem.get(a, 0))} {a}" for a in AVALIACOES) if len(avaliadas)
          else "sem avaliações"),
-        ("Vencem em 30 dias", f"{vencendo}", "laranja" if vencendo else "neutro", ""),
+        ("Vencem em 30 dias", f"{vencendo}", "laranja" if vencendo else "neutro", "de 7 a 29 dias"),
+        ("Vencem em 7 dias", f"{vence_7}", "vermelho" if vence_7 else "neutro", "atenção imediata"),
         ("Vencidos", f"{vencidos}", "vermelho" if vencidos else "neutro", ""),
     ])
     st.write("")
 
     tabela = f[[
         "id", "data_treinamento", "treinamento", "instrutor", "filial", "nome", "cpf", "funcao",
-        "setor", "vinculo", "avaliacao", "data_validade", "situacao",
+        "setor", "vinculo", "avaliacao", "data_validade", "situacao", "link_assinatura",
     ]].copy()
     tabela["cpf"] = tabela["cpf"].map(fmt_cpf)
+    tabela["link_assinatura"] = tabela["link_assinatura"].map(lambda l: texto(l).rsplit("/", 1)[-1] if texto(l) else "")
     textos = ["treinamento", "instrutor", "filial", "nome", "funcao", "setor", "vinculo", "avaliacao"]
     tabela[textos] = tabela[textos].fillna("")  # vazio em vez de "None" na tela
 
@@ -683,6 +691,7 @@ def registros(df: pd.DataFrame) -> None:
             "avaliacao": "AVALIAÇÃO",
             "data_validade": st.column_config.DateColumn("VALIDADE", format="DD/MM/YYYY"),
             "situacao": "SITUAÇÃO",
+            "link_assinatura": "ASSINATURA (arquivo no MinIO)",
         },
     )
     st.download_button(
@@ -737,6 +746,8 @@ def editar(reg: pd.Series, df: pd.DataFrame) -> None:
         validade = st.date_input(
             "VALIDADE", value=reg["data_validade"], format="DD/MM/YYYY", key=f"{k}_validade"
         )
+    if texto(reg["link_assinatura"]):
+        evidencia.mostrar(reg["link_assinatura"], "✍️ Ver assinatura")
     link_atual = texto(reg["link_evidencia"])
     if link_atual:
         evidencia.mostrar(link_atual)
