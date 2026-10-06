@@ -1,169 +1,176 @@
-"""Segurança do Trabalho — lançamentos do SESMT (Streamlit + Supabase).
+"""Evidências (RQ 10 assinada, relatório do acidente, fotos) no MinIO.
 
-Mesmo padrão do Metas TDV: login Azure → menu com a arte de fundo → telas
-de trabalho com páginas na barra lateral.
+O arquivo sobe com nome único numa pasta por tela, dentro do bucket
+seguranca-trabalho, e o caminho vai para a coluna link_evidencia. Uma lista
+de presença tem N linhas e um arquivo só: todas as linhas guardam o mesmo
+caminho.
 
-Arquivos:
-  streamlit_app.py       login Azure e controle de acesso
-  menu.py                tela inicial (cards) e roteador
-  estilo.py              CSS e componentes visuais (cópia do Metas TDV)
-  banco.py               leitura/gravação no Supabase
-  comum.py               utilitários de tela (CPF, datas, campos)
-  pagina_treinamento.py  RQ 10 → segtrabalho_treinamento
-  pagina_presenca.py     tela do QR Code (sem login): participante se registra
-  pagina_acidente.py     Relatório de Acidente → segtrabalho_acidente
-  pagina_plano_acao.py   Plano de ação → segtrabalho_plano_acao
-  pagina_cat.py          Acidentes internos (CAT) → segtrabalho_cat
-  evidencia.py           anexos no MinIO (bucket seguranca-trabalho)
+Os arquivos não são apagados ao excluir ou substituir: o da lista de presença
+é compartilhado entre linhas, e evidência guardada é rastreabilidade.
+
+Credenciais (secrets): MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY,
+MINIO_SECURE — o módulo do Modulos lê de st.secrets e conecta no import.
 """
 
-import time
+import io
+import re
+import unicodedata
+import uuid
+from pathlib import Path
 
 import streamlit as st
 
-# Configuração da página — DEVE ser a primeira chamada Streamlit
-st.set_page_config(page_title="Segurança do Trabalho", page_icon="🦺", layout="wide")
+import banco  # noqa: F401 — clona o Modulos e o coloca no sys.path
+import Modulos.Minio.examples.MinIO as meu_minio
+from comum import para_data, texto
 
-from requests_oauthlib import OAuth2Session  # noqa: E402
-
-import acesso  # noqa: E402
-import banco  # noqa: E402
-import menu  # noqa: E402
-import pagina_presenca  # noqa: E402
-from estilo import CSS_BASE_CLARA, CSS_INTERNO, CSS_LOGIN, URL_LOGO_BRANCO, sair  # noqa: E402
-
-st.markdown(CSS_BASE_CLARA, unsafe_allow_html=True)
+BUCKET = "seguranca-trabalho"
+TIPOS = ["pdf", "jpg", "jpeg", "png"]
 
 
-# ================================================
-# CONTROLE DE ACESSO
-# ================================================
-# Quem entra e quais filiais vê: acesso.py (ADMINS no código + tabela
-# segtrabalho_usuario). Além disso, só e-mail @dellavolpe.com.br.
-DOMINIO = "@dellavolpe.com.br"
-
-
-# ================================================
-# AUTENTICAÇÃO AZURE AD (INLINE)
-# ================================================
-# Mesmo fluxo do Metas TDV. O estado do login fica SÓ em st.session_state
-# (isolado por usuário): guardar em variável de módulo compartilha o login
-# entre todas as sessões do processo.
-GRAPH_ME = "https://graph.microsoft.com/v1.0/me"
-SCOPE = ["openid", "email", "profile", "https://graph.microsoft.com/User.Read"]
-
-
-def config_azure() -> dict:
-    return {
-        "client_id": st.secrets["AZURE_CLIENT_ID"],
-        "client_secret": st.secrets["AZURE_CLIENT_SECRET"],
-        "redirect_uri": st.secrets["AZURE_REDIRECT_URI"],
-        "auth_url": st.secrets["AZURE_AUTH_URL"],
-        "token_url": st.secrets["AZURE_TOKEN_URL"],
-    }
-
-
-def url_de_login(cfg: dict) -> str:
-    azure = OAuth2Session(cfg["client_id"], scope=SCOPE, redirect_uri=cfg["redirect_uri"])
-    url, _estado = azure.authorization_url(cfg["auth_url"], prompt="select_account")
-    return url
-
-
-def tela_login(cfg: dict) -> None:
-    st.markdown(CSS_LOGIN, unsafe_allow_html=True)
-    _, meio, _ = st.columns([1, 2, 1])
-    with meio:
-        st.image(URL_LOGO_BRANCO)
-    _, centro, _ = st.columns([1, 1, 1])
-    with centro:
-        # Aqui o link é correto: ainda não há sessão a preservar.
-        st.markdown(
-            f'<div class="center-container"><a href="{url_de_login(cfg)}" '
-            'class="custom-login-btn">🔐 Login com Microsoft</a></div>',
-            unsafe_allow_html=True,
+def _manager():
+    manager = getattr(meu_minio, "manager", None)
+    if manager is None:
+        raise RuntimeError(
+            "MinIO indisponível. Confira MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY "
+            "e MINIO_SECURE nos secrets e reinicie o app (a conexão é aberta só na inicialização)."
         )
-    st.stop()
+    return manager
 
 
-def autenticar() -> dict:
-    """Devolve {'nome', 'email', 'cargo'} do usuário logado, ou para na tela de login."""
-    cfg = config_azure()
-    st.session_state.setdefault("token", None)
+def subir(arquivo, pasta: str, nome: str = None) -> str:
+    """Envia o arquivo e devolve o caminho dele no bucket.
 
-    # Token vencido: pede login de novo em vez de seguir com uma sessão morta.
-    token = st.session_state["token"]
-    if token and token.get("expires_at", float("inf")) < time.time():
-        sair()
-        st.session_state["token"] = None
+    Sem `nome`: nome aleatório (ex.: acidente/3f2a....pdf). Com `nome`: nome
+    legível (ex.: treinamento/listas_fisicas/NR_35-SANTOS_SP-06-10-2026.pdf),
+    com -2, -3… se já existir — nunca sobrescreve.
+    """
+    manager = _manager()
+    extensao = Path(arquivo.name).suffix.lower() or ".bin"
+    manager.create_bucket_if_not_exists(BUCKET)
+    if nome:
+        caminho = _caminho_livre(manager, f"{pasta}/{nome}", extensao)
+    else:
+        caminho = f"{pasta}/{uuid.uuid4().hex}{extensao}"
+    conteudo = arquivo.getvalue()
+    # put_object com os bytes em memória: o upload() do módulo exige arquivo em disco
+    manager.client.put_object(
+        BUCKET, caminho, io.BytesIO(conteudo), length=len(conteudo),
+        content_type=arquivo.type or "application/octet-stream",
+    )
+    return caminho
 
-    # Volta do Azure com ?code=...
-    codigo = st.query_params.get("code")
-    if codigo and st.session_state["token"] is None:
-        azure = OAuth2Session(cfg["client_id"], redirect_uri=cfg["redirect_uri"], scope=SCOPE)
+
+def nome_legivel(*partes) -> str:
+    """'José da Silva', 'NR-35 Altura' -> 'JOSE_DA_SILVA-NR_35_ALTURA': sem acento nem símbolo."""
+    limpas = []
+    for parte in partes:
+        s = unicodedata.normalize("NFKD", str(parte or ""))
+        s = "".join(c for c in s if not unicodedata.combining(c)).upper()
+        limpas.append(re.sub(r"[^A-Z0-9]+", "_", s).strip("_") or "SEM_NOME")
+    return "-".join(limpas)
+
+
+PASTA_ASSINATURAS = "treinamento/assinaturas"
+PASTA_LISTAS_FISICAS = "treinamento/listas_fisicas"
+
+
+def nome_lista_fisica(treinamento, filial, instrutor, data_treinamento) -> str:
+    """TREINAMENTO-FILIAL[-INSTRUTOR]-DD-MM-AAAA: acha a RQ 10 escaneada no MinIO pelo nome."""
+    partes = [treinamento, filial] + ([instrutor] if texto(instrutor) else [])
+    return f"{nome_legivel(*partes)}-{para_data(data_treinamento):%d-%m-%Y}"
+
+
+def _caminho_livre(manager, base: str, extensao: str) -> str:
+    caminho, n = f"{base}{extensao}", 1
+    while _existe(manager, caminho):
+        n += 1
+        caminho = f"{base}-{n}{extensao}"
+    return caminho
+PASTA_ASSINATURAS_INSTRUTOR = "treinamento/assinaturas/instrutores"
+
+
+def subir_assinatura(png: bytes, nome: str, treinamento: str, data_treinamento,
+                     pasta: str = PASTA_ASSINATURAS) -> str:
+    """Grava a assinatura como <pasta>/NOME-TREINAMENTO-DD-MM-AAAA.png.
+
+    Participante: treinamento/assinaturas/; instrutor: treinamento/assinaturas/instrutores/.
+
+    Nome legível para achar no MinIO e na extração. Se já existir um arquivo
+    com esse nome (mesma pessoa, mesmo treinamento, mesmo dia), acrescenta -2, -3…
+    em vez de sobrescrever a assinatura anterior.
+    """
+    manager = _manager()
+    manager.create_bucket_if_not_exists(BUCKET)
+    data = para_data(data_treinamento)
+    caminho = _caminho_livre(manager, f"{pasta}/{nome_legivel(nome, treinamento)}-{data:%d-%m-%Y}", ".png")
+    manager.client.put_object(BUCKET, caminho, io.BytesIO(png), length=len(png), content_type="image/png")
+    return caminho
+
+
+def baixar(caminho: str) -> bytes:
+    """Conteúdo de um arquivo do bucket (ex.: a assinatura, para o PDF da lista)."""
+    resposta = _manager().client.get_object(BUCKET, caminho)
+    try:
+        return resposta.read()
+    finally:
+        resposta.close()
+        resposta.release_conn()
+
+
+def _existe(manager, caminho: str) -> bool:
+    try:
+        manager.client.stat_object(BUCKET, caminho)
+        return True
+    except Exception:
+        return False
+
+
+def remover(caminho: str) -> None:
+    try:
+        _manager().client.remove_object(BUCKET, caminho)
+    except Exception:
+        pass  # só é usado para desfazer um envio; se falhar, sobra um arquivo solto
+
+
+def gravar(arquivo, pasta: str, salvar, nome: str = None) -> tuple:
+    """Sobe o arquivo (se houver) e chama salvar(caminho) — caminho é None sem arquivo novo.
+
+    Se a gravação no banco falhar, apaga o arquivo que acabou de subir, para
+    não sobrar anexo sem registro.
+    """
+    caminho = None
+    if arquivo is not None:
         try:
-            st.session_state["token"] = azure.fetch_token(
-                cfg["token_url"], client_secret=cfg["client_secret"], code=codigo
-            )
+            caminho = subir(arquivo, pasta, nome)
         except Exception as erro:
-            st.query_params.clear()
-            if "Scope has changed" in str(erro):
-                st.warning("Escopos alterados. É necessário iniciar um novo login.")
-                st.link_button("🔐 Iniciar novo login", url_de_login(cfg))
-            else:
-                st.error(f"Erro ao obter token: {erro}")
-            st.stop()
-        st.query_params.clear()
-        st.rerun()
-
-    if st.session_state["token"] is None:
-        tela_login(cfg)
-
-    # Perfil do Graph: uma vez por sessão, não a cada clique.
-    if "usuario" not in st.session_state:
-        azure = OAuth2Session(cfg["client_id"], token=st.session_state["token"])
-        resposta = azure.get(GRAPH_ME)
-        if resposta.status_code != 200:
-            st.error(f"Falha ao obter perfil do usuário ({resposta.status_code}): {resposta.text}")
-            st.button("🔐 Entrar novamente", on_click=sair)
-            st.stop()
-        info = resposta.json()
-        email = (info.get("mail") or info.get("userPrincipalName") or "").strip().lower()
-        if not email:
-            st.error("Não foi possível identificar seu e-mail no Azure AD.")
-            st.stop()
-        st.session_state["usuario"] = {
-            "nome": info.get("displayName") or "Usuário",
-            "email": email,
-            "cargo": info.get("jobTitle") or "",
-        }
-    return st.session_state["usuario"]
+            return False, f"Não anexou a evidência: {erro}"
+    ok, msg = salvar(caminho)
+    if not ok and caminho:
+        remover(caminho)
+    return ok, msg
 
 
-# Presença por QR Code: a única tela sem login (motorista agregado e terceiro
-# não têm conta da empresa). Só registra a pessoa na lista aberta pelo TST.
-codigo_presenca = st.query_params.get("presenca")
-if codigo_presenca:
-    pagina_presenca.tela(codigo_presenca)
-    st.stop()
+def campo(rotulo: str, key: str, ajuda: str = None):
+    return st.file_uploader(
+        rotulo, type=TIPOS, key=key,
+        help=ajuda or "PDF ou foto (JPG/PNG). Escaneado fica mais legível que foto.",
+    )
 
-usuario = autenticar()
 
-url_sb, key_sb = banco.credenciais()
-if not url_sb or not key_sb:
-    st.markdown(CSS_INTERNO, unsafe_allow_html=True)
-    st.error("SUPABASE_URL e/ou SUPABASE_KEY não encontrados em st.secrets — nada vai gravar.")
-    st.stop()
-
-# Filiais do usuário: lidas uma vez por sessão (o "Sair" limpa)
-if "perfil" not in st.session_state:
-    st.session_state["perfil"] = acesso.carregar_perfil(usuario["email"])
-perfil = st.session_state["perfil"]
-
-if not usuario["email"].endswith(DOMINIO) or not (perfil["admin"] or perfil["codigos"]):
-    st.markdown(CSS_INTERNO, unsafe_allow_html=True)
-    st.error("Seu usuário não tem acesso a este app. Fale com o SESMT.")
-    st.caption(f"E-mail identificado: {usuario['email']}")
-    st.button("Sair", on_click=sair)
-    st.stop()
-
-menu.rodar(usuario)
+def mostrar(link, rotulo: str = "📎 Abrir evidência", vazio: str = "Nenhuma evidência anexada.") -> None:
+    """Botão para abrir a evidência já gravada (MinIO ou link antigo do SharePoint)."""
+    link = texto(link)
+    if not link:
+        st.caption(vazio)
+        return
+    if link.startswith("http"):
+        st.link_button(rotulo, link)
+        return
+    try:
+        # o bucket não é público: o link é gerado na hora e vale 1 hora
+        url = _manager().generate_presigned_download_url(BUCKET, link, expires_hours=1)
+    except Exception as erro:
+        st.caption(f"`{link}` — não foi possível gerar o link ({erro}).")
+        return
+    st.link_button(rotulo, url)
