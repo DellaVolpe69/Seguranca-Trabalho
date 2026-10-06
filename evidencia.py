@@ -63,8 +63,15 @@ def nome_legivel(*partes) -> str:
     return "-".join(limpas)
 
 
-def subir_assinatura(png: bytes, nome: str, treinamento: str, data_treinamento) -> str:
-    """Grava a assinatura como treinamento/assinaturas/NOME-TREINAMENTO-DD-MM-AAAA.png.
+PASTA_ASSINATURAS = "treinamento/assinaturas"
+PASTA_ASSINATURAS_INSTRUTOR = "treinamento/assinaturas/instrutores"
+
+
+def subir_assinatura(png: bytes, nome: str, treinamento: str, data_treinamento,
+                     pasta: str = PASTA_ASSINATURAS) -> str:
+    """Grava a assinatura como <pasta>/NOME-TREINAMENTO-DD-MM-AAAA.png.
+
+    Participante: treinamento/assinaturas/; instrutor: treinamento/assinaturas/instrutores/.
 
     Nome legível para achar no MinIO e na extração. Se já existir um arquivo
     com esse nome (mesma pessoa, mesmo treinamento, mesmo dia), acrescenta -2, -3…
@@ -73,7 +80,7 @@ def subir_assinatura(png: bytes, nome: str, treinamento: str, data_treinamento) 
     manager = _manager()
     manager.create_bucket_if_not_exists(BUCKET)
     data = para_data(data_treinamento)
-    base = f"treinamento/assinaturas/{nome_legivel(nome, treinamento)}-{data:%d-%m-%Y}"
+    base = f"{pasta}/{nome_legivel(nome, treinamento)}-{data:%d-%m-%Y}"
     caminho, n = f"{base}.png", 1
     while _existe(manager, caminho):
         n += 1
