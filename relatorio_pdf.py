@@ -25,7 +25,7 @@ CINZA_LINHA = (217, 207, 199)
 # (título, largura em mm) — A4 deitado: 277 mm úteis
 COLUNAS = [("#", 8), ("NOME", 66), ("CPF", 30), ("FUNÇÃO", 42), ("SETOR", 34),
            ("AVALIAÇÃO", 25), ("ASSINATURA", 72)]
-ALTURA_LINHA = 14
+ALTURA_LINHA = 12
 
 
 def _t(valor) -> str:
@@ -42,6 +42,7 @@ class _Lista(FPDF):
                          f"por {gerado_por}")
         self.set_auto_page_break(False)
         self.set_margins(10, 10, 10)
+        self.com_tabela = True  # False na página que só leva o rodapé (conteúdo + instrutor)
 
     def header(self):
         try:
@@ -70,8 +71,10 @@ class _Lista(FPDF):
         self.cell(120, 6, _t(c["instrutor"]))
         self.cell(0, 6, _t(f"{c['total']} participante{'' if c['total'] == 1 else 's'}"), align="R")
 
-        # cabeçalho da tabela (repete em toda página)
+        # cabeçalho da tabela (repete em toda página que tem participantes)
         self.set_xy(10, 36)
+        if not self.com_tabela:
+            return
         self.set_font("Helvetica", "B", 8.5)
         self.set_fill_color(*LARANJA)
         self.set_text_color(255, 255, 255)
@@ -89,7 +92,8 @@ class _Lista(FPDF):
         self.cell(0, 5, f"Página {self.page_no()}/{{nb}}", align="R")
 
 
-def lista_presenca(linhas: pd.DataFrame, assinaturas: dict, gerado_por: str) -> bytes:
+def lista_presenca(linhas: pd.DataFrame, assinaturas: dict, gerado_por: str,
+                   assinatura_instrutor: bytes | None = None) -> bytes:
     """PDF da lista. `assinaturas` = {id do registro: PNG em bytes}."""
     primeira = linhas.iloc[0]
     instrutores = sorted({texto(i) for i in linhas.get("instrutor", []) if texto(i)})
@@ -129,16 +133,59 @@ def lista_presenca(linhas: pd.DataFrame, assinaturas: dict, gerado_por: str) -> 
         pdf.ln(3)
         pdf.set_font("Helvetica", "I", 8)
         pdf.cell(0, 5, _t("Lista sem assinaturas digitais: a assinatura desta lista está na RQ 10 de papel."))
+        pdf.ln(5)
+
+    conteudo = next((str(c).strip() for c in linhas.get("conteudo_programatico", []) if texto(c)), "")
+    _rodape_rq10(pdf, conteudo, cabecalho, assinatura_instrutor)
     return bytes(pdf.output())
 
 
+def _rodape_rq10(pdf: FPDF, conteudo: str, cabecalho: dict, assinatura_instrutor) -> None:
+    """Conteúdo programático + Instrutor / Assinatura / Data — o pé da RQ 10 de papel."""
+    largura = sum(l for _, l in COLUNAS)
+    linhas_conteudo = [_t(l) for l in conteudo.splitlines() if l.strip()] or ["-"]
+    pdf.set_font("Helvetica", "", 9)
+    altura_conteudo = max(18, 5 * sum(1 + int(pdf.get_string_width(l) // (largura - 52)) for l in linhas_conteudo) + 4)
+    if pdf.get_y() + 4 + altura_conteudo + 14 > pdf.h - 14:
+        pdf.com_tabela = False
+        pdf.add_page()
+    y = pdf.get_y() + 4
+    pdf.set_draw_color(*CINZA_LINHA)
+
+    # Conteúdo programático
+    pdf.set_xy(10, y)
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.cell(48, altura_conteudo, _t("Conteúdo Programático:"), border=1, align="C")
+    pdf.set_font("Helvetica", "", 9)
+    pdf.rect(58, y, largura - 48, altura_conteudo)
+    pdf.set_xy(60, y + 2)
+    pdf.multi_cell(largura - 52, 5, "\n".join(linhas_conteudo))
+
+    # Instrutor | Assinatura | Data
+    y += altura_conteudo
+    pdf.set_xy(10, y)
+    for rotulo, valor, larg_rotulo, larg_valor in (("Instrutor:", cabecalho["instrutor"], 22, 78),
+                                                    ("Assinatura:", "", 24, 80),
+                                                    ("Data:", cabecalho["data"], 14, 59)):
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.cell(larg_rotulo, 14, _t(rotulo), border=1, align="C")
+        pdf.set_font("Helvetica", "", 9)
+        x_valor = pdf.get_x()
+        pdf.cell(larg_valor, 14, _t(valor), border=1, align="C")
+        if rotulo == "Assinatura:" and assinatura_instrutor:
+            _imagem_na_caixa(pdf, assinatura_instrutor, x_valor, y, larg_valor, 14)
+
+
 def _assinatura(pdf: FPDF, png: bytes, x: float, y: float, largura: float) -> None:
+    _imagem_na_caixa(pdf, png, x, y, largura, ALTURA_LINHA)
+
+
+def _imagem_na_caixa(pdf: FPDF, png: bytes, x: float, y: float, largura: float, altura: float) -> None:
     """Assinatura centralizada na célula, sem distorcer."""
     try:
         w, h = Image.open(io.BytesIO(png)).size
-        caixa_w, caixa_h = largura - 4, ALTURA_LINHA - 2
-        escala = min(caixa_w / w, caixa_h / h)
+        escala = min((largura - 4) / w, (altura - 2) / h)
         iw, ih = w * escala, h * escala
-        pdf.image(io.BytesIO(png), x=x + (largura - iw) / 2, y=y + (ALTURA_LINHA - ih) / 2, w=iw, h=ih)
+        pdf.image(io.BytesIO(png), x=x + (largura - iw) / 2, y=y + (altura - ih) / 2, w=iw, h=ih)
     except Exception:
         pass  # imagem ilegível: a célula fica em branco
