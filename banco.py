@@ -20,6 +20,7 @@ TREINAMENTO = "segtrabalho_treinamento"
 PLANO_ACAO = "segtrabalho_plano_acao"
 ACIDENTE = "segtrabalho_acidente"
 USUARIO = "segtrabalho_usuario"
+CAT = "segtrabalho_cat"  # acidentes internos (Comunicação de Acidente de Trabalho)
 SESSAO = "segtrabalho_treinamento_sessao"  # lista de presença aberta por QR Code
 
 # O PostgREST devolve no máximo 1000 linhas por requisição; acima disso a
@@ -163,6 +164,16 @@ def atualizar_onde(tabela: str, coluna: str, valor, dados: dict) -> tuple:
         return False, f"Não alterou: {erro}"
     listar.clear()
     return True, f"{len(resposta.data or [])} registro(s) alterado(s)."
+
+
+def excluir_onde(tabela: str, coluna: str, valor) -> tuple:
+    """Apaga todas as linhas com coluna = valor (ex.: os participantes de uma lista cancelada)."""
+    try:
+        resposta = conectar().table(tabela).delete().eq(coluna, valor).execute()
+    except Exception as erro:
+        return False, f"Não excluiu: {erro}"
+    listar.clear()
+    return True, f"{len(resposta.data or [])} registro(s) excluído(s)."
 
 
 def excluir(tabela: str, id_registro) -> tuple:
