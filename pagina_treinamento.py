@@ -44,7 +44,8 @@ AVALIACOES = ["Satisfeito", "Normal", "Insatisfeito"]
 COLUNAS = [
     "id", "nome", "cpf", "data_treinamento", "filial", "funcao", "setor",
     "treinamento", "instrutor", "vinculo", "data_validade", "avaliacao",
-    "link_evidencia", "link_assinatura", "cod_filial", "sessao_id", "criado_em", "criado_por",
+    "link_evidencia", "link_assinatura", "conteudo_programatico", "link_assinatura_instrutor",
+    "cod_filial", "sessao_id", "criado_em", "criado_por",
 ]
 # Planilha de participantes (paliativo enquanto a leitura da RQ 10 escaneada está em stand-by)
 COLUNAS_PLANILHA = ["NOME", "CPF", "FUNÇÃO", "SETOR", "VÍNCULO", "AVALIAÇÃO"]
@@ -124,6 +125,11 @@ def nova_lista(df: pd.DataFrame, usuario: dict) -> None:
         instrutor = campo_instrutor(df, f"tr_instrutor_{v}")
     with c6:
         arquivo = evidencia.campo("RQ 10 ASSINADA (PDF ou foto)", f"tr_arquivo_{v}")
+    c7, c8 = st.columns([2.5, 2])
+    with c7:
+        conteudo = campo_conteudo(f"tr_conteudo_{v}")
+    with c8:
+        assinatura_instrutor = campo_assinatura_instrutor(f"tr_ass_instrutor_{v}")
 
     titulo_secao(
         "2. Participantes",
@@ -139,7 +145,7 @@ def nova_lista(df: pd.DataFrame, usuario: dict) -> None:
     rotulo = f"💾 Salvar lista de presença ({total} participante{'' if total == 1 else 's'})"
     if st.button(rotulo, type="primary", key=f"tr_salvar_{v}"):
         salvar_lista(df, usuario, treinamento, data_tr, cod_filial, filial, validade, instrutor,
-                     arquivo, lista, rascunho)
+                     conteudo, assinatura_instrutor, arquivo, lista, rascunho)
 
 
 def campos_treinamento(df: pd.DataFrame, k: str) -> tuple:
@@ -163,6 +169,35 @@ def campo_instrutor(df: pd.DataFrame, key: str, valor_atual=None):
         "INSTRUTOR", opcoes_existentes(df, "instrutor"), key, valor_atual,
         ajuda="Quem aplicou o treinamento. Se não estiver na lista, escolha OUTRO e digite o nome.",
     )
+
+
+def campo_conteudo(key: str):
+    """Conteúdo programático da RQ 10: o que foi discutido (um assunto por linha). Sai no PDF."""
+    valor = st.text_area(
+        "CONTEÚDO PROGRAMÁTICO", key=key, height=120,
+        placeholder="Um assunto por linha. Ex.:\n- Acondicionamento de material\n- Amarração",
+        help="O que foi discutido no treinamento. Sai no PDF da lista de presença.",
+    )
+    return (valor or "").strip() or None  # mantém as quebras de linha
+
+
+def campo_assinatura_instrutor(key: str):
+    """Quadro de assinatura (o mesmo do celular). Devolve o PNG ou None."""
+    try:
+        from assinatura import campo_assinatura
+        st.markdown("**ASSINATURA DO INSTRUTOR**")
+        png = campo_assinatura(key)
+    except Exception as erro:
+        st.warning(f"Quadro de assinatura indisponível: {erro}")
+        return None
+    if png:
+        st.image(png, width=180)
+    return png
+
+
+def subir_assinatura_instrutor(png, instrutor, treinamento, data_tr):
+    return evidencia.subir_assinatura(png, instrutor or "instrutor", treinamento, data_tr,
+                                      pasta=evidencia.PASTA_ASSINATURAS_INSTRUTOR)
 
 
 def campo_validade(key: str):
@@ -369,7 +404,7 @@ def lista_participantes(lista: list, v: int) -> None:
 
 
 def salvar_lista(df, usuario, treinamento, data_tr, cod_filial, filial, validade, instrutor,
-                 arquivo, lista, rascunho) -> None:
+                 conteudo, assinatura_instrutor, arquivo, lista, rascunho) -> None:
     erros = erros_treinamento(treinamento, data_tr, filial, validade)
     if rascunho:
         erros.append("Há um participante preenchido que não entrou na lista: clique em "
@@ -396,15 +431,26 @@ def salvar_lista(df, usuario, treinamento, data_tr, cod_filial, filial, validade
         "cod_filial": cod_filial,
         "treinamento": treinamento,
         "instrutor": instrutor,
+        "conteudo_programatico": conteudo,
         "data_validade": validade,
         "link_evidencia": None,
         "criado_por": usuario["email"],
     } for p in lista]
 
     def salvar(caminho):
-        for linha in linhas:  # o mesmo arquivo vale para todos os participantes
+        assinatura = None
+        if assinatura_instrutor:
+            try:
+                assinatura = subir_assinatura_instrutor(assinatura_instrutor, instrutor, treinamento, data_tr)
+            except Exception as erro:
+                return False, f"Não salvou a assinatura do instrutor: {erro}"
+        for linha in linhas:  # o mesmo arquivo e a mesma assinatura valem para todos os participantes
             linha["link_evidencia"] = caminho
-        return banco.inserir(banco.TREINAMENTO, linhas)
+            linha["link_assinatura_instrutor"] = assinatura
+        ok, msg = banco.inserir(banco.TREINAMENTO, linhas)
+        if not ok and assinatura:
+            evidencia.remover(assinatura)
+        return ok, msg
 
     ok, msg = evidencia.gravar(arquivo, "treinamento", salvar)
     if not ok:
@@ -457,6 +503,7 @@ def abrir_lista(df: pd.DataFrame, usuario: dict) -> None:
         validade = campo_validade(f"tr_qr_{v}_validade")
     with c2:
         instrutor = campo_instrutor(df, f"tr_qr_{v}_instrutor")
+    conteudo = campo_conteudo(f"tr_qr_{v}_conteudo")
 
     if not st.button("📱 Gerar QR Code da lista", type="primary", key=f"tr_qr_{v}_gerar"):
         return
@@ -468,7 +515,7 @@ def abrir_lista(df: pd.DataFrame, usuario: dict) -> None:
     ok, msg = banco.inserir(banco.SESSAO, [{
         "codigo": codigo, "treinamento": treinamento, "data_treinamento": data_tr,
         "filial": filial, "cod_filial": cod_filial, "data_validade": validade,
-        "instrutor": instrutor, "criado_por": usuario["email"],
+        "instrutor": instrutor, "conteudo_programatico": conteudo, "criado_por": usuario["email"],
     }])
     if not ok:
         st.error(msg)
@@ -524,12 +571,18 @@ def acompanhar(sessao: dict) -> None:
     titulo_secao("Encerrar a lista", "Depois de encerrar, o QR Code para de funcionar e a lista "
                                      "vai para Registros.")
     k = f"tr_qr_fim_{sessao['id']}"
-    arquivo = evidencia.campo("RQ 10 ASSINADA (PDF ou foto)", f"{k}_arquivo",
-                              ajuda="A folha assinada continua sendo a evidência da presença.")
+    if sessao.get("conteudo_programatico"):
+        st.caption("Conteúdo programático: " + sessao["conteudo_programatico"].replace("\n", " · "))
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        arquivo = evidencia.campo("RQ 10 ASSINADA (PDF ou foto)", f"{k}_arquivo",
+                                  ajuda="A folha assinada continua sendo a evidência da presença.")
+    with c2:
+        assinatura_instrutor = campo_assinatura_instrutor(f"{k}_ass_instrutor")
     confirmar = st.checkbox("Todos já se registraram — quero encerrar a lista", key=f"{k}_confirma")
     b1, b2, _ = st.columns([1.3, 1.6, 3])
     if b1.button("🔒 Encerrar lista", type="primary", key=f"{k}_encerrar", disabled=not confirmar):
-        encerrar(sessao, arquivo)
+        encerrar(sessao, arquivo, assinatura_instrutor)
     b2.button("⬅️ Voltar (a lista continua aberta)", key=f"{k}_voltar",
               on_click=st.session_state.pop, args=("tr_qr_sessao", None))
 
@@ -575,8 +628,22 @@ def participantes_ao_vivo(sessao_id: int) -> None:
         st.rerun(scope="fragment")
 
 
-def encerrar(sessao: dict, arquivo) -> None:
-    # 1º a evidência nos participantes; se falhar, nada muda e a lista segue aberta
+def encerrar(sessao: dict, arquivo, assinatura_instrutor=None) -> None:
+    # assinatura do instrutor em todos os participantes da lista
+    if assinatura_instrutor:
+        try:
+            caminho = subir_assinatura_instrutor(assinatura_instrutor, sessao.get("instrutor"),
+                                                 sessao["treinamento"], sessao["data_treinamento"])
+        except Exception as erro:
+            st.error(f"Não salvou a assinatura do instrutor: {erro}")
+            return
+        ok, msg = banco.atualizar_onde(banco.TREINAMENTO, "sessao_id", sessao["id"],
+                                       {"link_assinatura_instrutor": caminho})
+        if not ok:
+            evidencia.remover(caminho)
+            st.error(msg)
+            return
+    # depois a evidência nos participantes; se falhar, a lista segue aberta
     ok, msg = evidencia.gravar(arquivo, "treinamento", lambda caminho: banco.atualizar_onde(
         banco.TREINAMENTO, "sessao_id", sessao["id"], {"link_evidencia": caminho}) if caminho else (True, ""))
     if not ok:
@@ -793,8 +860,15 @@ def lista_pdf(f: pd.DataFrame) -> None:
                             assinaturas[p["id"]] = evidencia.baixar(p["link_assinatura"])
                         except Exception:
                             faltando += 1
+                ass_instrutor = None
+                link_instrutor = next((l for l in linhas["link_assinatura_instrutor"] if texto(l)), None)
+                if link_instrutor:
+                    try:
+                        ass_instrutor = evidencia.baixar(link_instrutor)
+                    except Exception:
+                        faltando += 1
                 usuario = st.session_state.get("usuario", {}).get("email", "")
-                pdf = relatorio_pdf.lista_presenca(linhas, assinaturas, usuario)
+                pdf = relatorio_pdf.lista_presenca(linhas, assinaturas, usuario, ass_instrutor)
         except Exception as erro:
             st.error(f"Não foi possível gerar o PDF: {erro}")
             return
@@ -851,6 +925,8 @@ def editar(reg: pd.Series, df: pd.DataFrame) -> None:
         )
     if texto(reg["link_assinatura"]):
         evidencia.mostrar(reg["link_assinatura"], "✍️ Ver assinatura")
+    if texto(reg["link_assinatura_instrutor"]):
+        evidencia.mostrar(reg["link_assinatura_instrutor"], "✍️ Ver assinatura do instrutor")
     link_atual = texto(reg["link_evidencia"])
     if link_atual:
         evidencia.mostrar(link_atual)
