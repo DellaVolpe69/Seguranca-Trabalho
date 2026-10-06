@@ -129,7 +129,8 @@ def registrar(codigo, nome, cpf, funcao, setor, vinculo, avaliacao, png, quadro_
         "data_treinamento": sessao["data_treinamento"],
         "filial": sessao["filial"], "cod_filial": sessao["cod_filial"],
         "data_validade": sessao["data_validade"], "sessao_id": sessao["id"],
-        "link_assinatura": caminho, "criado_por": "QR Code",
+        "link_assinatura": caminho, "link_evidencia": sessao.get("link_evidencia"),
+        "criado_por": "QR Code",
     }])
     if not ok:
         if caminho:
