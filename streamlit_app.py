@@ -13,6 +13,7 @@ Arquivos:
   pagina_presenca.py     tela do QR Code (sem login): participante se registra
   pagina_acidente.py     Relatório de Acidente → segtrabalho_acidente
   pagina_plano_acao.py   Plano de ação → segtrabalho_plano_acao
+  pagina_cat.py          Acidentes internos (CAT) → segtrabalho_cat
   evidencia.py           anexos no MinIO (bucket seguranca-trabalho)
 """
 
