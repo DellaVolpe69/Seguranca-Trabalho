@@ -452,7 +452,8 @@ def salvar_lista(df, usuario, treinamento, data_tr, cod_filial, filial, validade
             evidencia.remover(assinatura)
         return ok, msg
 
-    ok, msg = evidencia.gravar(arquivo, "treinamento", salvar)
+    nome = evidencia.nome_lista_fisica(treinamento, filial, instrutor, data_tr)
+    ok, msg = evidencia.gravar(arquivo, evidencia.PASTA_LISTAS_FISICAS, salvar, nome)
     if not ok:
         st.error(msg)  # nada foi limpo: a lista continua na tela
         return
@@ -528,16 +529,61 @@ def abrir_lista(df: pd.DataFrame, usuario: dict) -> None:
 def mostrar_abertas(abertas: list) -> None:
     if not abertas:
         return
-    titulo_secao("Listas abertas", "O QR Code delas ainda funciona. Acompanhe ou encerre.")
+    titulo_secao("Listas abertas", "O QR Code delas ainda funciona. Acompanhe, encerre ou cancele.")
     with st.container(border=True):
         for s in abertas:
-            texto_col, botao_col = st.columns([6, 1.4])
+            texto_col, botao_col, cancelar_col = st.columns([6, 1.4, 1.2])
             texto_col.markdown(
                 f"**{s['treinamento']}**  \n{fmt_data(s['data_treinamento'])} · {s['filial']} · "
                 f"aberta por {s['criado_por']}"
             )
             botao_col.button("Acompanhar", key=f"tr_qr_abrir_{s['id']}",
                              on_click=st.session_state.__setitem__, args=("tr_qr_sessao", s["id"]))
+            cancelar_col.button("🗑️ Cancelar", key=f"tr_qr_cancelar_{s['id']}",
+                                on_click=st.session_state.__setitem__, args=("tr_qr_cancelando", s["id"]))
+            if st.session_state.get("tr_qr_cancelando") == s["id"]:
+                confirmar_cancelamento(s)
+
+
+def confirmar_cancelamento(sessao: dict) -> None:
+    """Pede confirmação: cancelar apaga a lista e quem já se registrou nela."""
+    try:
+        registrados = banco.buscar(banco.TREINAMENTO, sessao_id=sessao["id"])
+    except Exception as erro:
+        st.error(f"Não foi possível ler os participantes: {erro}")
+        return
+    n = len(registrados)
+    st.warning(
+        f"Cancelar a lista **{sessao['treinamento']}** de {fmt_data(sessao['data_treinamento'])}? "
+        "O QR Code para de funcionar na hora"
+        + (f" e **{n} participante{'' if n == 1 else 's'} já registrado{'' if n == 1 else 's'}** "
+           "(com as assinaturas) será apagado." if n else ". Ninguém se registrou ainda.")
+    )
+    sim, nao, _ = st.columns([1.4, 1, 4])
+    if sim.button("Sim, cancelar a lista", type="primary", key=f"tr_qr_cancelar_sim_{sessao['id']}"):
+        cancelar_lista(sessao, registrados)
+    nao.button("Não", key=f"tr_qr_cancelar_nao_{sessao['id']}",
+               on_click=st.session_state.pop, args=("tr_qr_cancelando", None))
+
+
+def cancelar_lista(sessao: dict, registrados: list) -> None:
+    # 1º os participantes (eles apontam para a lista), depois a lista
+    ok, msg = banco.excluir_onde(banco.TREINAMENTO, "sessao_id", sessao["id"])
+    if not ok:
+        st.error(msg)
+        return
+    ok, msg = banco.excluir(banco.SESSAO, sessao["id"])
+    if not ok:
+        st.error(f"Os participantes foram apagados, mas a lista não: {msg}. Tente cancelar de novo.")
+        return
+    for p in registrados:  # cancelada = lançada por engano: não deixa nome/assinatura solta no MinIO
+        if texto(p.get("link_assinatura")):
+            evidencia.remover(p["link_assinatura"])
+    st.session_state.pop("tr_qr_cancelando", None)
+    if st.session_state.get("tr_qr_sessao") == sessao["id"]:
+        st.session_state.pop("tr_qr_sessao", None)
+    guardar_msg(MSG_QR, "success", f"Lista “{sessao['treinamento']}” cancelada.")
+    st.rerun()
 
 
 def link_presenca(codigo: str) -> str:
@@ -568,21 +614,18 @@ def acompanhar(sessao: dict) -> None:
     with c2:
         participantes_ao_vivo(sessao["id"])
 
+    lista_fisica(sessao)
+
     titulo_secao("Encerrar a lista", "Depois de encerrar, o QR Code para de funcionar e a lista "
                                      "vai para Registros.")
     k = f"tr_qr_fim_{sessao['id']}"
     if sessao.get("conteudo_programatico"):
         st.caption("Conteúdo programático: " + sessao["conteudo_programatico"].replace("\n", " · "))
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        arquivo = evidencia.campo("RQ 10 ASSINADA (PDF ou foto)", f"{k}_arquivo",
-                                  ajuda="A folha assinada continua sendo a evidência da presença.")
-    with c2:
-        assinatura_instrutor = campo_assinatura_instrutor(f"{k}_ass_instrutor")
+    assinatura_instrutor = campo_assinatura_instrutor(f"{k}_ass_instrutor")
     confirmar = st.checkbox("Todos já se registraram — quero encerrar a lista", key=f"{k}_confirma")
     b1, b2, _ = st.columns([1.3, 1.6, 3])
     if b1.button("🔒 Encerrar lista", type="primary", key=f"{k}_encerrar", disabled=not confirmar):
-        encerrar(sessao, arquivo, assinatura_instrutor)
+        encerrar(sessao, assinatura_instrutor)
     b2.button("⬅️ Voltar (a lista continua aberta)", key=f"{k}_voltar",
               on_click=st.session_state.pop, args=("tr_qr_sessao", None))
 
@@ -602,11 +645,12 @@ def participantes_ao_vivo(sessao_id: int) -> None:
         return
     tabela = garantir_colunas(pd.DataFrame(linhas), ["link_assinatura"])
     tabela["assinou"] = tabela["link_assinatura"].map(lambda l: "✍️ Sim" if texto(l) else "—")
-    tabela = tabela[["nome", "cpf", "funcao", "vinculo", "avaliacao", "assinou"]]
+    tabela["registro"] = tabela["criado_em"].map(data_hora_local)
+    tabela = tabela[["registro", "nome", "cpf", "funcao", "vinculo", "avaliacao", "assinou"]]
     tabela["cpf"] = tabela["cpf"].map(fmt_cpf)
     st.dataframe(tabela.fillna(""), hide_index=True, width="stretch", column_config={
         "nome": "NOME", "cpf": "CPF", "funcao": "FUNÇÃO", "vinculo": "VÍNCULO", "avaliacao": "AVALIAÇÃO",
-        "assinou": "ASSINOU",
+        "assinou": "ASSINOU", "registro": "REGISTRO",
     })
 
     rv = st.session_state.setdefault("tr_qr_rm_v", 0)  # avança a cada remoção: limpa a escolha
@@ -628,7 +672,46 @@ def participantes_ao_vivo(sessao_id: int) -> None:
         st.rerun(scope="fragment")
 
 
-def encerrar(sessao: dict, arquivo, assinatura_instrutor=None) -> None:
+def lista_fisica(sessao: dict) -> None:
+    """RQ 10 de papel escaneada: dá para anexar (ou trocar) enquanto a lista está aberta."""
+    titulo_secao("📎 Lista física (RQ 10 assinada)",
+                 "Anexe a folha escaneada a qualquer momento. Fica ligada a esta lista e "
+                 "a todos os participantes, inclusive quem se registrar depois.")
+    k = f"tr_qr_fisica_{sessao['id']}"
+    fv = st.session_state.setdefault(f"{k}_v", 0)  # avança a cada anexo: limpa o campo
+    atual = texto(sessao.get("link_evidencia"))
+    if atual:
+        st.caption(f"Anexada: {atual.rsplit('/', 1)[-1]}")
+        evidencia.mostrar(atual, "📎 Abrir lista física")
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        arquivo = evidencia.campo("TROCAR ARQUIVO (PDF ou foto)" if atual else "RQ 10 ASSINADA (PDF ou foto)",
+                                  f"{k}_{fv}")
+    with c2:
+        st.write("")
+        anexar = st.button("📎 Anexar", key=f"{k}_anexar_{fv}", disabled=arquivo is None)
+    if not anexar:
+        return
+    nome = evidencia.nome_lista_fisica(sessao["treinamento"], sessao["filial"], sessao.get("instrutor"),
+                                       sessao["data_treinamento"])
+
+    def salvar(caminho):
+        ok, msg = banco.atualizar(banco.SESSAO, sessao["id"], {"link_evidencia": caminho})
+        if ok:  # quem já se registrou também fica com a lista física
+            ok, msg = banco.atualizar_onde(banco.TREINAMENTO, "sessao_id", sessao["id"],
+                                           {"link_evidencia": caminho})
+        return ok, msg
+
+    ok, msg = evidencia.gravar(arquivo, evidencia.PASTA_LISTAS_FISICAS, salvar, nome)
+    if not ok:
+        st.error(msg)
+        return
+    st.session_state[f"{k}_v"] = fv + 1
+    guardar_msg(MSG_QR, "success", "Lista física anexada.")
+    st.rerun()
+
+
+def encerrar(sessao: dict, assinatura_instrutor=None) -> None:
     # assinatura do instrutor em todos os participantes da lista
     if assinatura_instrutor:
         try:
@@ -643,12 +726,6 @@ def encerrar(sessao: dict, arquivo, assinatura_instrutor=None) -> None:
             evidencia.remover(caminho)
             st.error(msg)
             return
-    # depois a evidência nos participantes; se falhar, a lista segue aberta
-    ok, msg = evidencia.gravar(arquivo, "treinamento", lambda caminho: banco.atualizar_onde(
-        banco.TREINAMENTO, "sessao_id", sessao["id"], {"link_evidencia": caminho}) if caminho else (True, ""))
-    if not ok:
-        st.error(msg)
-        return
     ok, msg = banco.atualizar(banco.SESSAO, sessao["id"], {"encerrada_em": datetime.now(timezone.utc)})
     if not ok:
         st.error(f"A lista continua aberta — tente encerrar de novo. ({msg})")
@@ -741,6 +818,9 @@ def registros(df: pd.DataFrame) -> None:
     ]].copy()
     tabela["cpf"] = tabela["cpf"].map(fmt_cpf)
     tabela["link_assinatura"] = tabela["link_assinatura"].map(lambda l: texto(l).rsplit("/", 1)[-1] if texto(l) else "")
+    # hora em que a pessoa se registrou pelo QR (turnos diferentes no mesmo QR); lista lançada fica em branco
+    tabela["registro_qr"] = [data_hora_local(c) if pd.notna(sid) else ""
+                             for c, sid in zip(f["criado_em"], f["sessao_id"])]
     textos = ["treinamento", "instrutor", "filial", "nome", "funcao", "setor", "vinculo", "avaliacao"]
     tabela[textos] = tabela[textos].fillna("")  # vazio em vez de "None" na tela
 
@@ -767,6 +847,7 @@ def registros(df: pd.DataFrame) -> None:
             "data_validade": st.column_config.DateColumn("VALIDADE", format="DD/MM/YYYY"),
             "situacao": "SITUAÇÃO",
             "link_assinatura": "ASSINATURA (arquivo no MinIO)",
+            "registro_qr": "REGISTRO NO QR",
         },
     )
     st.download_button(
@@ -800,6 +881,14 @@ def chaves_de_lista(f: pd.DataFrame) -> pd.DataFrame:
         instrutor_chave=f["instrutor"].map(lambda i: texto(i) or ""),
         lista_chave=lista.fillna(f["criado_em"].astype(str)),
     )
+
+
+def data_hora_local(criado_em) -> str:
+    """'2026-10-06T14:32:10+00:00' -> '06/10 11:32' (hora de Brasília)."""
+    try:
+        return pd.to_datetime(criado_em, utc=True).tz_convert("America/Sao_Paulo").strftime("%d/%m %H:%M")
+    except Exception:
+        return ""
 
 
 def hora_local(criado_em) -> str:
@@ -875,6 +964,14 @@ def lista_pdf(f: pd.DataFrame) -> None:
         partes = [g.treinamento, g.filial] + ([g.instrutor_chave] if g.instrutor_chave else [])
         nome = evidencia.nome_legivel(*partes) + f"-{fmt_data(g.data_treinamento).replace('/', '-')}.pdf"
         st.session_state["tr_pdf"] = (rotulo, nome, pdf, faltando)
+
+    g = por_rotulo[rotulo]
+    mesma = True
+    for coluna in CHAVE_LISTA:
+        mesma &= base[coluna] == getattr(g, coluna)
+    fisica = next((l for l in base.loc[mesma, "link_evidencia"] if texto(l)), None)
+    if fisica:
+        evidencia.mostrar(fisica, "📎 Abrir lista física (RQ 10 assinada)")
 
     pronto = st.session_state.get("tr_pdf")
     if pronto and pronto[0] == rotulo:
