@@ -125,6 +125,7 @@ def registrar(codigo, nome, cpf, funcao, setor, vinculo, avaliacao, png, quadro_
         "nome": texto(nome), "cpf": cpf, "funcao": funcao, "setor": texto(setor),
         "vinculo": vinculo, "avaliacao": avaliacao,
         "treinamento": sessao["treinamento"], "instrutor": sessao.get("instrutor"),
+        "conteudo_programatico": sessao.get("conteudo_programatico"),
         "data_treinamento": sessao["data_treinamento"],
         "filial": sessao["filial"], "cod_filial": sessao["cod_filial"],
         "data_validade": sessao["data_validade"], "sessao_id": sessao["id"],
