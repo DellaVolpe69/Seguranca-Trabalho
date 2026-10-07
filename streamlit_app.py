@@ -14,6 +14,7 @@ Arquivos:
   pagina_acidente.py     Relatório de Acidente → segtrabalho_acidente
   pagina_plano_acao.py   Plano de ação → segtrabalho_plano_acao
   pagina_cat.py          Acidentes internos (CAT) → segtrabalho_cat
+  pagina_indicadores.py  painel de indicadores (só leitura), uma página por indicador
   evidencia.py           anexos no MinIO (bucket seguranca-trabalho)
 """
 
