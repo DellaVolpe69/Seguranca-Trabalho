@@ -5,18 +5,29 @@ filial é o mesmo do resto do app (acesso.listar).
 Acidentes Internos: CATs (segtrabalho_cat) — quantos acidentes, com e sem
 afastamento, dias perdidos e onde se concentram. Dias perdidos se dividem em
 até o 15º dia (a empresa paga) e a partir do 16º (o INSS paga).
+
+Treinamentos: listas de presença (segtrabalho_treinamento) — volume por mês e
+ano, quando acontecem (dia da semana, semana do mês), pessoas por turma,
+vencimentos e filiais sem treinamento. As cargas históricas de 2024/2025
+foram gravadas no dia 1º do mês (a planilha só tinha o mês): entram nos
+números por mês/ano, mas não no que depende do dia.
 """
+
+from datetime import date
 
 import altair as alt
 import pandas as pd
 import streamlit as st
 
+import acesso
 import pagina_cat
+import pagina_treinamento
 from comum import csv_excel, texto
 from estilo import barra_paginas_lateral, bloco_usuario_lateral, cabecalho_tela, linha_cartoes, titulo_secao
 
 PAGINAS = {
     "acidentes_internos": "Acidentes Internos",
+    "treinamentos": "Treinamentos",
 }
 MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 MESES_NOME = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto",
@@ -24,14 +35,22 @@ MESES_NOME = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho
 DIAS_INSS = pagina_cat.DIAS_INSS
 COR_EMPRESA, COR_INSS = "#E4610A", "#8C1D18"
 COR_COM, COR_SEM, COR_NAO_INFORMADO = "#E4610A", "#D9CBBF", "#9A8E86"
+CARGA_HISTORICA = "carga planilha"  # criado_por das cargas 2024/2025 (data = dia 1º do mês)
+DIAS_SEMANA = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
+SEMANAS_MES = ["1ª (dias 1–7)", "2ª (8–14)", "3ª (15–21)", "4ª (22–28)", "5ª (29–31)"]
+VINCULOS = pagina_treinamento.VINCULOS + ["Não informado"]
+CORES_VINCULO = ["#E4610A", "#8C1D18", "#F7A46B", "#5A4E46", "#D9CBBF"]
 
 
 def tela(usuario: dict) -> None:
     cabecalho_tela("📊 INDICADORES", "Indicadores de Segurança do Trabalho a partir dos lançamentos do app.",
                    "indicadores")
-    barra_paginas_lateral("ind_pagina", PAGINAS, "ind")
+    pagina = barra_paginas_lateral("ind_pagina", PAGINAS, "ind")
     bloco_usuario_lateral(usuario)
-    acidentes_internos()
+    if pagina == "treinamentos":
+        treinamentos()
+    else:
+        acidentes_internos()
 
 
 # ---------------------------------------------------------------------
@@ -170,7 +189,7 @@ def barras_empilhadas(tabela: pd.DataFrame, series: list, cores: list, titulo_y:
         alt.Chart(longa)
         .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
         .encode(
-            x=alt.X("mes:N", sort=ordem, title=None, axis=alt.Axis(labelAngle=0)),
+            x=alt.X("mes:N", sort=ordem, title=None, axis=alt.Axis(labelAngle=0 if len(ordem) <= 14 else -45)),
             y=alt.Y("sum(valor):Q", title=titulo_y, axis=alt.Axis(tickMinStep=1)),
             color=alt.Color("Série:N", scale=alt.Scale(domain=series, range=cores),
                             legend=None),  # a legenda vai no título (legenda_html): a do tema do Streamlit sobrepõe rótulos
@@ -186,19 +205,22 @@ def legenda_html(series: list, cores: list) -> str:
     return " &nbsp; ".join(f'<span style="color:{c}">■</span> {s}' for s, c in zip(series, cores))
 
 
-def ranking(f: pd.DataFrame, coluna: str, titulo: str, n: int = 5) -> None:
-    """Os n mais frequentes, em tabela com barra (rótulo longo não é cortado como no eixo do gráfico)."""
-    contagem = f[coluna].map(texto).dropna().value_counts().head(n)
+def contar(f: pd.DataFrame, coluna: str, n: int = 5) -> pd.Series:
+    return f[coluna].map(texto).dropna().value_counts().head(n)
+
+
+def ranking(contagem: pd.Series, titulo: str, rotulo_valor: str = "ACIDENTES") -> None:
+    """Os mais frequentes, em tabela com barra (rótulo longo não é cortado como no eixo do gráfico)."""
     if contagem.empty:
         st.markdown(f"**{titulo}**")
         st.caption("Sem informação no filtro.")
         return
     st.dataframe(
-        contagem.rename_axis("item").reset_index(name="acidentes"), hide_index=True, width="stretch",
+        contagem.rename_axis("item").reset_index(name="valor"), hide_index=True, width="stretch",
         column_config={
             "item": st.column_config.TextColumn(titulo.upper(), width="medium"),
-            "acidentes": st.column_config.ProgressColumn(
-                "ACIDENTES", format="%d", min_value=0, max_value=int(contagem.max())),
+            "valor": st.column_config.ProgressColumn(
+                rotulo_valor, format="%d", min_value=0, max_value=int(contagem.max())),
         },
     )
 
@@ -244,11 +266,11 @@ def graficos_acidentes(f: pd.DataFrame) -> None:
     titulo_secao("Onde mais acontece", "Os 5 mais frequentes no filtro.")
     r1, r2, r3 = st.columns(3)
     with r1:
-        ranking(f, "agente_causador", "Agente causador")
+        ranking(contar(f, "agente_causador"), "Agente causador")
     with r2:
-        ranking(f, "parte_corpo", "Parte do corpo")
+        ranking(contar(f, "parte_corpo"), "Parte do corpo")
     with r3:
-        ranking(f, "cargo", "Função")
+        ranking(contar(f, "cargo"), "Função")
 
 
 def relatorio_acidentes(f: pd.DataFrame) -> None:
@@ -279,3 +301,343 @@ def relatorio_acidentes(f: pd.DataFrame) -> None:
     )
     st.download_button("⬇️ Baixar CSV", csv_excel(tabela), file_name="indicador_acidentes_internos.csv",
                        mime="text/csv", key="ind_ai_csv")
+
+
+# ---------------------------------------------------------------------
+# Treinamentos
+# ---------------------------------------------------------------------
+
+def variacao(atual: float, antes: float, sobe_bom: bool = True) -> tuple:
+    """('▲ 12,5%', cor) — sem base de comparação, mostra só a diferença."""
+    if atual == antes:
+        return "= igual", "neutro"
+    texto_var = (f"{abs(atual - antes) / antes:.1%}".replace(".", ",") if antes
+                 else f"+{atual - antes:g}")
+    bom = (atual > antes) == sobe_bom
+    return f"{'▲' if atual > antes else '▼'} {texto_var}", "verde" if bom else "vermelho"
+
+
+def treinamentos() -> None:
+    st.markdown("### Treinamentos")
+    df = pagina_treinamento.carregar()
+    df = df[df["data_treinamento"].notna()].copy()
+    if df.empty:
+        st.info("Nenhum treinamento lançado ainda.")
+        return
+    hoje = date.today()
+    df["filial_nome"] = [acesso.FILIAIS.get(str(c), texto(f) or "Sem filial")
+                         for c, f in zip(df["cod_filial"], df["filial"])]
+    df["ano"] = df["data_treinamento"].map(lambda d: d.year)
+    df["mes"] = df["data_treinamento"].map(lambda d: d.month)
+    df["vinculo_"] = df["vinculo"].map(lambda v: texto(v) or "Não informado")
+    df["data_real"] = ~df["criado_por"].fillna("").astype(str).str.startswith(CARGA_HISTORICA)
+    df["pessoa"] = [texto(c) or (texto(n) or "").upper() for c, n in zip(df["cpf"], df["nome"])]
+    df = pagina_treinamento.chaves_de_lista(df)
+    # turma = uma lista de presença (na carga histórica: treinamento × mês × filial)
+    df["turma"] = df[["treinamento", "data_treinamento", "filial_nome", "instrutor_chave", "lista_chave"]] \
+        .astype(str).agg("|".join, axis=1)
+
+    f1, f2, f3, f4, f5 = st.columns(5)
+    with f1:
+        filiais = st.multiselect("FILIAL", sorted(df["filial_nome"].unique()), key="ind_tr_filial")
+    with f2:
+        anos = st.multiselect("ANO", sorted(df["ano"].unique(), reverse=True), key="ind_tr_ano")
+    with f3:
+        meses = st.multiselect("MÊS", list(range(1, 13)), format_func=lambda m: MESES_NOME[m - 1],
+                               key="ind_tr_mes")
+    with f4:
+        nomes = st.multiselect("TREINAMENTO", sorted(df["treinamento"].dropna().unique(), key=str.casefold),
+                               key="ind_tr_treinamento")
+    with f5:
+        vinculos = st.multiselect("VÍNCULO", VINCULOS, key="ind_tr_vinculo")
+
+    # base = sem o recorte de período (comparação anual, vencimentos e filiais têm o próprio período)
+    base = df
+    if filiais:
+        base = base[base["filial_nome"].isin(filiais)]
+    if nomes:
+        base = base[base["treinamento"].isin(nomes)]
+    if vinculos:
+        base = base[base["vinculo_"].isin(vinculos)]
+    f = base
+    if anos:
+        f = f[f["ano"].isin(anos)]
+    if meses:
+        f = f[f["mes"].isin(meses)]
+
+    situacao = situacao_atual(base, hoje)
+    cartoes_treinamentos(f, situacao)
+    st.write("")
+    analise, vencimentos, aba_filiais, relatorio = st.tabs(
+        ["📊 Análise", "⏰ Vencimentos", "🏢 Filiais", "📄 Relatório"])
+    with analise:
+        comparacao_anual(base, hoje)
+        if f.empty:
+            st.info("Nenhum treinamento no filtro.")
+        else:
+            graficos_treinamentos(f)
+    with vencimentos:
+        tabela_vencimentos(situacao)
+    with aba_filiais:
+        filiais_sem_treinamento(f, base, filiais, hoje)
+    with relatorio:
+        relatorio_treinamentos(f)
+
+
+def situacao_atual(base: pd.DataFrame, hoje: date) -> pd.DataFrame:
+    """Última participação de cada pessoa em cada treinamento, com a situação da validade.
+    Quem já refez o treinamento não conta como vencido pela participação antiga."""
+    ultima = base.sort_values("data_treinamento").drop_duplicates(["pessoa", "treinamento"], keep="last")
+    ultima = ultima[ultima["pessoa"] != ""].copy()
+    ultima["situacao"] = ultima["data_validade"].map(lambda v: pagina_treinamento.situacao_validade(v, hoje))
+    ultima["dias"] = ultima["data_validade"].map(lambda v: (v - hoje).days if v else None)
+    return ultima
+
+
+def cartoes_treinamentos(f: pd.DataFrame, situacao: pd.DataFrame) -> None:
+    reais = f[f["data_real"]]
+    media = reais.groupby("turma").size().mean() if not reais.empty else None
+    avaliacoes = f["avaliacao"].map(texto).dropna()
+    satisfeitos = (avaliacoes == "Satisfeito").mean() if len(avaliacoes) else None
+    em_7 = int((situacao["situacao"] == "Vence em 7 dias").sum())
+    em_30 = em_7 + int((situacao["situacao"] == "Vence em 30 dias").sum())
+    vencidos = int((situacao["situacao"] == "Vencido").sum())
+    pessoas = f.loc[f["pessoa"] != "", "pessoa"].nunique()
+    linha_cartoes([
+        ("Participações", milhar(len(f)), "neutro", f"{milhar(pessoas)} pessoas diferentes"),
+        ("Turmas", milhar(f["turma"].nunique()), "neutro",
+         f"média de {media:.1f} pessoas por turma".replace(".", ",") if media else ""),
+        ("Satisfação", f"{satisfeitos:.0%}" if satisfeitos is not None else "—",
+         "verde" if satisfeitos and satisfeitos >= 0.8 else "laranja" if satisfeitos is not None else "neutro",
+         f"satisfeitos em {milhar(len(avaliacoes))} avaliações" if len(avaliacoes) else "sem avaliação no filtro"),
+        ("Vencem em 30 dias", f"{em_30}", "laranja" if em_30 else "neutro",
+         f"{em_7} em até 7 dias" if em_7 else "nenhum em até 7 dias"),
+        ("Vencidos", milhar(vencidos), "vermelho" if vencidos else "verde", "sem renovação (situação de hoje)"),
+    ])
+
+
+def milhar(n: int) -> str:
+    return f"{int(n):,}".replace(",", ".")
+
+
+def comparacao_anual(base: pd.DataFrame, hoje: date) -> None:
+    """Mesmos meses fechados nos dois anos (o mês corrente fica de fora: ainda está aberto)."""
+    fechados = hoje.month - 1
+    if not fechados:
+        return
+    ano, ano_ant = hoje.year, hoje.year - 1
+    periodo = f"{MESES[0]}–{MESES[fechados - 1]}" if fechados > 1 else MESES[0]
+
+    def no_periodo(a):
+        return base[(base["ano"] == a) & (base["mes"] <= fechados)]
+
+    atual, anterior = no_periodo(ano), no_periodo(ano_ant)
+    mes = base[(base["ano"] == ano) & (base["mes"] == fechados)]
+    mes_ant_p = pd.Period(date(ano, fechados, 1), "M") - 1
+    mes_ant = base[(base["ano"] == mes_ant_p.year) & (base["mes"] == mes_ant_p.month)]
+    texto_ano, cor_ano = variacao(len(atual), len(anterior))
+    texto_mes, cor_mes = variacao(len(mes), len(mes_ant))
+    titulo_secao(f"Participações {periodo}/{ano} vs. {ano_ant}",
+                 "Mesmos meses nos dois anos, só meses fechados. Usa os filtros de filial, treinamento e vínculo.")
+    linha_cartoes([
+        (f"{periodo}/{ano}", milhar(len(atual)), "neutro", f"{milhar(atual['turma'].nunique())} turmas"),
+        (f"Mesmo período {ano_ant}", milhar(len(anterior)), "neutro", f"{milhar(anterior['turma'].nunique())} turmas"),
+        (f"{ano} vs. {ano_ant}", texto_ano, cor_ano, f"{len(atual) - len(anterior):+d} participações"),
+        (f"{MESES_NOME[fechados - 1]} vs. mês anterior", texto_mes, cor_mes,
+         f"{len(mes)} contra {len(mes_ant)} em {MESES_NOME[mes_ant_p.month - 1]}"),
+    ])
+
+
+def contagem_mensal(f: pd.DataFrame, coluna: str, series: list) -> pd.DataFrame:
+    """Participações por mês × série, do primeiro ao último mês do filtro (mês vazio = zero)."""
+    periodos = f["data_treinamento"].map(lambda d: pd.Period(d, "M"))
+    meses = pd.period_range(periodos.min(), periodos.max(), freq="M")
+    tabela = pd.crosstab(periodos, f[coluna]).reindex(index=meses, columns=series, fill_value=0)
+    tabela["mes"] = [f"{MESES[p.month - 1]}/{str(p.year)[2:]}" for p in tabela.index]
+    return tabela.reset_index(drop=True)
+
+
+def barras_destaque(dados: pd.DataFrame, categoria: str, ordem: list, titulo_y: str) -> alt.Chart:
+    """Barras de turmas por categoria; a maior fica em laranja escuro."""
+    maior = dados["turmas"].max()
+    return (
+        alt.Chart(dados.assign(destaque=dados["turmas"] == maior))
+        .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
+        .encode(
+            x=alt.X(f"{categoria}:N", sort=ordem, title=None, axis=alt.Axis(labelAngle=0)),
+            y=alt.Y("turmas:Q", title=titulo_y, axis=alt.Axis(tickMinStep=1)),
+            color=alt.condition("datum.destaque", alt.value("#B84E08"), alt.value("#F7A46B")),
+            tooltip=[alt.Tooltip(f"{categoria}:N", title=" "), alt.Tooltip("turmas:Q", title="Turmas"),
+                     alt.Tooltip("participacoes:Q", title="Participações")],
+        )
+        .properties(height=230)
+    )
+
+
+def quando_acontecem(reais: pd.DataFrame) -> None:
+    titulo_secao("Quando acontecem",
+                 "Turmas por dia da semana e por semana do mês. Só lançamentos do app (QR Code, lista e Excel): "
+                 "as cargas de 2024/2025 têm só o mês.")
+    if reais.empty:
+        st.caption("Nenhum lançamento com data completa no filtro.")
+        return
+    pessoas = reais.groupby("turma").size().rename("participacoes")
+    turmas = reais.drop_duplicates("turma").join(pessoas, on="turma").assign(n=1)
+    turmas["dia"] = turmas["data_treinamento"].map(lambda d: DIAS_SEMANA[d.weekday()])
+    turmas["semana"] = turmas["data_treinamento"].map(lambda d: SEMANAS_MES[(d.day - 1) // 7])
+    c1, c2 = st.columns(2)
+    for coluna_tela, campo, ordem, titulo in ((c1, "dia", DIAS_SEMANA, "Dia da semana"),
+                                              (c2, "semana", SEMANAS_MES, "Semana do mês")):
+        dados = (turmas.groupby(campo).agg(turmas=("n", "sum"), participacoes=("participacoes", "sum"))
+                 .reindex(ordem, fill_value=0).rename_axis(campo).reset_index())
+        top = dados.loc[dados["turmas"].idxmax()]
+        with coluna_tela:
+            st.markdown(f"**{titulo}** · mais turmas: **{top[campo]}** ({int(top['turmas'])})")
+            st.altair_chart(barras_destaque(dados, campo, ordem, "Turmas"))
+
+
+def pessoas_por_turma(reais: pd.DataFrame) -> None:
+    titulo_secao("Pessoas por turma", "Participantes por lista, por treinamento. Só lançamentos do app.")
+    if reais.empty:
+        st.caption("Nenhum lançamento com data completa no filtro.")
+        return
+    por_turma = reais.groupby(["treinamento", "turma"]).size().rename("pessoas").reset_index()
+    tabela = (por_turma.groupby("treinamento")
+              .agg(turmas=("turma", "size"), participacoes=("pessoas", "sum"), media=("pessoas", "mean"),
+                   menor=("pessoas", "min"), maior=("pessoas", "max"))
+              .sort_values("turmas", ascending=False).reset_index())
+    st.dataframe(
+        tabela, hide_index=True, width="stretch",
+        column_config={
+            "treinamento": st.column_config.TextColumn("TREINAMENTO", width="large"),
+            "turmas": st.column_config.NumberColumn("TURMAS", format="%d"),
+            "participacoes": st.column_config.NumberColumn("PARTICIPAÇÕES", format="%d"),
+            "media": st.column_config.ProgressColumn("MÉDIA POR TURMA", format="%.1f", min_value=0,
+                                                     max_value=float(tabela["media"].max())),
+            "menor": st.column_config.NumberColumn("MENOR TURMA", format="%d"),
+            "maior": st.column_config.NumberColumn("MAIOR TURMA", format="%d"),
+        },
+    )
+
+
+def graficos_treinamentos(f: pd.DataFrame) -> None:
+    titulo_secao("Participações por mês", legenda_html(VINCULOS, CORES_VINCULO))
+    st.altair_chart(barras_empilhadas(contagem_mensal(f, "vinculo_", VINCULOS), VINCULOS, CORES_VINCULO,
+                                      "Participações"))
+    reais = f[f["data_real"]]
+    quando_acontecem(reais)
+    pessoas_por_turma(reais)
+
+    titulo_secao("Rankings", "Os 5 maiores no filtro.")
+    r1, r2, r3 = st.columns(3)
+    with r1:
+        ranking(contar(f, "treinamento"), "Treinamento", "PARTICIPAÇÕES")
+    with r2:
+        # a carga histórica não tem instrutor: o ranking só pega o que foi lançado com ele
+        ranking(contar(f.drop_duplicates("turma"), "instrutor"), "Instrutor", "TURMAS")
+    with r3:
+        respostas = f["avaliacao"].map(texto).dropna().value_counts()
+        ranking(respostas.reindex(pagina_treinamento.AVALIACOES).dropna().astype(int), "Avaliação", "RESPOSTAS")
+
+
+def tabela_vencimentos(situacao: pd.DataFrame) -> None:
+    titulo_secao("Vencimentos",
+                 "Última participação de cada pessoa em cada treinamento: quem já refez não aparece como vencido. "
+                 "Usa os filtros de filial, treinamento e vínculo.")
+    escolha = st.multiselect("SITUAÇÃO", ["Vencido", "Vence em 7 dias", "Vence em 30 dias"],
+                             default=["Vence em 7 dias", "Vence em 30 dias"], key="ind_tr_situacao")
+    lista = situacao[situacao["situacao"].isin(escolha)].sort_values("data_validade")
+    if lista.empty:
+        st.success("Nenhum treinamento nessa situação.")
+        return
+    tabela = lista[["data_validade", "dias", "situacao", "nome", "treinamento", "filial_nome", "vinculo_",
+                    "funcao", "data_treinamento"]]
+    st.dataframe(
+        tabela, hide_index=True, width="stretch",
+        column_config={
+            "data_validade": st.column_config.DateColumn("VALIDADE", format="DD/MM/YYYY"),
+            "dias": st.column_config.NumberColumn("DIAS", format="%d", help="Dias até vencer (negativo = já venceu)"),
+            "situacao": "SITUAÇÃO",
+            "nome": "NOME",
+            "treinamento": "TREINAMENTO",
+            "filial_nome": "FILIAL",
+            "vinculo_": "VÍNCULO",
+            "funcao": "FUNÇÃO",
+            "data_treinamento": st.column_config.DateColumn("FEITO EM", format="DD/MM/YYYY"),
+        },
+    )
+    st.download_button("⬇️ Baixar CSV", csv_excel(tabela), file_name="treinamentos_vencimentos.csv",
+                       mime="text/csv", key="ind_tr_csv_venc")
+
+
+def filiais_sem_treinamento(f: pd.DataFrame, base: pd.DataFrame, filiais: list, hoje: date) -> None:
+    titulo_secao("Filiais", "Todas as filiais do seu acesso, inclusive as que nunca lançaram treinamento. "
+                            "Usa os filtros de treinamento e vínculo.")
+    limite = st.select_slider("SEM TREINAMENTO HÁ MAIS DE", [30, 60, 90, 180, 365], value=90,
+                              format_func=lambda d: f"{d} dias", key="ind_tr_limite")
+    nomes = sorted({acesso.FILIAIS.get(c, c) for c in acesso.perfil()["codigos"]} | set(base["filial_nome"]))
+    if filiais:
+        nomes = [n for n in nomes if n in filiais]
+    ultimo = base.groupby("filial_nome")["data_treinamento"].max()
+    no_filtro = f.groupby("filial_nome").agg(turmas=("turma", "nunique"), participacoes=("id", "size"))
+    tabela = pd.DataFrame({"filial": nomes})
+    tabela["ultimo"] = pd.to_datetime(tabela["filial"].map(ultimo))  # NaT (célula vazia) para quem nunca lançou
+    tabela["dias"] = (pd.Timestamp(hoje) - tabela["ultimo"]).dt.days.astype("Int64")
+    tabela["turmas"] = tabela["filial"].map(no_filtro["turmas"]).fillna(0).astype(int)
+    tabela["participacoes"] = tabela["filial"].map(no_filtro["participacoes"]).fillna(0).astype(int)
+    parada = f"Há mais de {limite} dias"
+    tabela["situacao"] = tabela["dias"].map(
+        lambda d: "Nunca lançou" if pd.isna(d) else parada if d > limite else "Em dia")
+    nunca = int((tabela["situacao"] == "Nunca lançou").sum())
+    paradas = int((tabela["situacao"] == parada).sum())
+    linha_cartoes([
+        ("Filiais", f"{len(tabela)}", "neutro", "no seu acesso"),
+        (f"Sem treinamento há + de {limite} dias", f"{paradas}", "vermelho" if paradas else "verde",
+         "último treinamento antes disso"),
+        ("Nunca lançaram", f"{nunca}", "laranja" if nunca else "verde", "nenhum treinamento no app"),
+        ("Com turma no filtro", f"{int((tabela['turmas'] > 0).sum())}", "neutro", "período dos filtros de ano e mês"),
+    ])
+    ordem = {parada: 0, "Nunca lançou": 1, "Em dia": 2}
+    tabela = (tabela.assign(_ordem=tabela["situacao"].map(ordem), _dias=-tabela["dias"].fillna(0))
+              .sort_values(["_ordem", "_dias", "filial"]).drop(columns=["_ordem", "_dias"]))
+    # célula vazia vira "None" no st.dataframe: quem nunca lançou mostra "—"
+    tabela["ultimo"] = tabela["ultimo"].map(lambda d: "—" if pd.isna(d) else f"{d:%d/%m/%Y}")
+    tabela["dias"] = tabela["dias"].map(lambda d: "—" if pd.isna(d) else str(int(d)))
+    st.dataframe(
+        tabela, hide_index=True, width="stretch",
+        column_config={
+            "filial": "FILIAL",
+            "ultimo": "ÚLTIMO TREINAMENTO",
+            "dias": "DIAS DESDE O ÚLTIMO",
+            "turmas": st.column_config.NumberColumn("TURMAS NO FILTRO", format="%d"),
+            "participacoes": st.column_config.NumberColumn("PARTICIPAÇÕES NO FILTRO", format="%d"),
+            "situacao": "SITUAÇÃO",
+        },
+    )
+
+
+def relatorio_treinamentos(f: pd.DataFrame) -> None:
+    if f.empty:
+        st.info("Nenhum treinamento no filtro.")
+        return
+    tabela = f.sort_values("data_treinamento", ascending=False)[[
+        "data_treinamento", "treinamento", "filial_nome", "instrutor", "nome", "funcao", "setor", "vinculo_",
+        "avaliacao", "data_validade",
+    ]]
+    st.dataframe(
+        tabela, hide_index=True, width="stretch",
+        column_config={
+            "data_treinamento": st.column_config.DateColumn("DATA", format="DD/MM/YYYY"),
+            "treinamento": "TREINAMENTO",
+            "filial_nome": "FILIAL",
+            "instrutor": "INSTRUTOR",
+            "nome": "NOME",
+            "funcao": "FUNÇÃO",
+            "setor": "SETOR",
+            "vinculo_": "VÍNCULO",
+            "avaliacao": "AVALIAÇÃO",
+            "data_validade": st.column_config.DateColumn("VALIDADE", format="DD/MM/YYYY"),
+        },
+    )
+    st.download_button("⬇️ Baixar CSV", csv_excel(tabela), file_name="indicador_treinamentos.csv",
+                       mime="text/csv", key="ind_tr_csv")
