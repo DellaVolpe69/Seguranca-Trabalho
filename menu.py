@@ -16,6 +16,7 @@ import streamlit as st
 import acesso
 import pagina_acidente
 import pagina_cat
+import pagina_indicadores
 import pagina_plano_acao
 import pagina_treinamento
 from estilo import (
@@ -57,6 +58,11 @@ SVG_CRUZ = (
     '<rect x="3.5" y="5.5" width="17" height="14" rx="2"/><path d="M9 5.5V4h6v1.5"/>'
     '<path d="M12 9.5v6"/><path d="M9 12.5h6"/></svg>'
 )
+SVG_GRAFICO = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    '<path d="M4 20h16"/><path d="M7 16v-4"/><path d="M12 16V8"/><path d="M17 16v-6"/></svg>'
+)
 SVG_CALENDARIO = (
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"'
     ' stroke-linecap="round" stroke-linejoin="round">'
@@ -73,6 +79,8 @@ CARDS_MENU = [
      "Ações de acidentes, inspeções e PGR: prazo, conclusão e eficácia."),
     ("cat", "ACIDENTES INTERNOS", SVG_CRUZ,
      "CAT: acidentes de motoristas próprios e funcionários, afastamentos e dias perdidos."),
+    ("indicadores", "INDICADORES", SVG_GRAFICO,
+     "Painel de indicadores: acidentes internos, afastamentos e dias perdidos por filial e mês."),
 ]
 
 ROTAS = {
@@ -80,6 +88,7 @@ ROTAS = {
     "acidente": pagina_acidente.tela,
     "plano_acao": pagina_plano_acao.tela,
     "cat": pagina_cat.tela,
+    "indicadores": pagina_indicadores.tela,
 }
 
 
