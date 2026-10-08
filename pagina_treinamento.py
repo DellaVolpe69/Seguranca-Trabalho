@@ -25,7 +25,7 @@ import acesso
 import banco
 import evidencia
 from comum import (
-    garantir_colunas, FUNCOES_RQ05, VAZIO, campo_com_outro, campo_lista, csv_excel, erro_cpf, fmt_cpf,
+    garantir_colunas, FUNCOES_RQ05, VAZIO, campo_com_outro, campo_lista, baixar_excel, erro_cpf, fmt_cpf,
     fmt_data, guardar_msg, mostrar_erros, opcoes_existentes, para_data,
     render_msg, so_digitos, texto,
 )
@@ -825,6 +825,23 @@ def registros(df: pd.DataFrame) -> None:
     tabela[textos] = tabela[textos].fillna("")  # vazio em vez de "None" na tela
 
     versao_tabela = st.session_state.setdefault("tr_tabela_v", 0)
+    colunas = {
+        "id": st.column_config.NumberColumn("ID", format="%d", width="small"),
+        "data_treinamento": st.column_config.DateColumn("DATA", format="DD/MM/YYYY"),
+        "treinamento": "TREINAMENTO",
+        "instrutor": "INSTRUTOR",
+        "filial": "FILIAL",
+        "nome": "NOME",
+        "cpf": "CPF",
+        "funcao": "FUNÇÃO",
+        "setor": "SETOR",
+        "vinculo": "VÍNCULO",
+        "avaliacao": "AVALIAÇÃO",
+        "data_validade": st.column_config.DateColumn("VALIDADE", format="DD/MM/YYYY"),
+        "situacao": "SITUAÇÃO",
+        "link_assinatura": "ASSINATURA (arquivo no MinIO)",
+        "registro_qr": "REGISTRO NO QR",
+    }
     evento = st.dataframe(
         tabela,
         key=f"tr_tabela_{versao_tabela}",
@@ -832,28 +849,9 @@ def registros(df: pd.DataFrame) -> None:
         selection_mode="single-row",
         hide_index=True,
         width="stretch",
-        column_config={
-            "id": st.column_config.NumberColumn("ID", format="%d", width="small"),
-            "data_treinamento": st.column_config.DateColumn("DATA", format="DD/MM/YYYY"),
-            "treinamento": "TREINAMENTO",
-            "instrutor": "INSTRUTOR",
-            "filial": "FILIAL",
-            "nome": "NOME",
-            "cpf": "CPF",
-            "funcao": "FUNÇÃO",
-            "setor": "SETOR",
-            "vinculo": "VÍNCULO",
-            "avaliacao": "AVALIAÇÃO",
-            "data_validade": st.column_config.DateColumn("VALIDADE", format="DD/MM/YYYY"),
-            "situacao": "SITUAÇÃO",
-            "link_assinatura": "ASSINATURA (arquivo no MinIO)",
-            "registro_qr": "REGISTRO NO QR",
-        },
+        column_config=colunas,
     )
-    st.download_button(
-        "⬇️ Baixar CSV", csv_excel(tabela), file_name="treinamentos.csv",
-        mime="text/csv", key="tr_csv",
-    )
+    baixar_excel(tabela, colunas, "treinamentos", "tr_xlsx", "Treinamentos")
     lista_pdf(f)
 
     linhas = evento.selection.rows
