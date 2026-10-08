@@ -22,7 +22,7 @@ import streamlit as st
 import acesso
 import pagina_cat
 import pagina_treinamento
-from comum import csv_excel, texto
+from comum import baixar_excel, texto
 from estilo import barra_paginas_lateral, bloco_usuario_lateral, cabecalho_tela, linha_cartoes, titulo_secao
 
 PAGINAS = {
@@ -281,26 +281,23 @@ def relatorio_acidentes(f: pd.DataFrame) -> None:
         "data_acidente", "numero_cat", "nome", "filial", "publico", "cargo", "tipo_acidente",
         "agente_causador", "parte_corpo", "afastamento", "dias_afastamento", "dias_empresa", "dias_inss",
     ]]
-    st.dataframe(
-        tabela, hide_index=True, width="stretch",
-        column_config={
-            "data_acidente": st.column_config.DateColumn("DATA", format="DD/MM/YYYY"),
-            "numero_cat": "Nº CAT",
-            "nome": "COLABORADOR",
-            "filial": "FILIAL",
-            "publico": "PÚBLICO",
-            "cargo": "FUNÇÃO",
-            "tipo_acidente": "TIPO",
-            "agente_causador": "AGENTE CAUSADOR",
-            "parte_corpo": "PARTE DO CORPO",
-            "afastamento": "AFASTAMENTO",
-            "dias_afastamento": st.column_config.NumberColumn("DIAS", format="%d"),
-            "dias_empresa": st.column_config.NumberColumn("DIAS EMPRESA", format="%d"),
-            "dias_inss": st.column_config.NumberColumn("DIAS INSS", format="%d"),
-        },
-    )
-    st.download_button("⬇️ Baixar CSV", csv_excel(tabela), file_name="indicador_acidentes_internos.csv",
-                       mime="text/csv", key="ind_ai_csv")
+    colunas = {
+        "data_acidente": st.column_config.DateColumn("DATA", format="DD/MM/YYYY"),
+        "numero_cat": "Nº CAT",
+        "nome": "COLABORADOR",
+        "filial": "FILIAL",
+        "publico": "PÚBLICO",
+        "cargo": "FUNÇÃO",
+        "tipo_acidente": "TIPO",
+        "agente_causador": "AGENTE CAUSADOR",
+        "parte_corpo": "PARTE DO CORPO",
+        "afastamento": "AFASTAMENTO",
+        "dias_afastamento": st.column_config.NumberColumn("DIAS", format="%d"),
+        "dias_empresa": st.column_config.NumberColumn("DIAS EMPRESA", format="%d"),
+        "dias_inss": st.column_config.NumberColumn("DIAS INSS", format="%d"),
+    }
+    st.dataframe(tabela, hide_index=True, width="stretch", column_config=colunas)
+    baixar_excel(tabela, colunas, "indicador_acidentes_internos", "ind_ai_xlsx", "Acidentes internos")
 
 
 # ---------------------------------------------------------------------
@@ -552,22 +549,19 @@ def tabela_vencimentos(situacao: pd.DataFrame) -> None:
         return
     tabela = lista[["data_validade", "dias", "situacao", "nome", "treinamento", "filial_nome", "vinculo_",
                     "funcao", "data_treinamento"]]
-    st.dataframe(
-        tabela, hide_index=True, width="stretch",
-        column_config={
-            "data_validade": st.column_config.DateColumn("VALIDADE", format="DD/MM/YYYY"),
-            "dias": st.column_config.NumberColumn("DIAS", format="%d", help="Dias até vencer (negativo = já venceu)"),
-            "situacao": "SITUAÇÃO",
-            "nome": "NOME",
-            "treinamento": "TREINAMENTO",
-            "filial_nome": "FILIAL",
-            "vinculo_": "VÍNCULO",
-            "funcao": "FUNÇÃO",
-            "data_treinamento": st.column_config.DateColumn("FEITO EM", format="DD/MM/YYYY"),
-        },
-    )
-    st.download_button("⬇️ Baixar CSV", csv_excel(tabela), file_name="treinamentos_vencimentos.csv",
-                       mime="text/csv", key="ind_tr_csv_venc")
+    colunas = {
+        "data_validade": st.column_config.DateColumn("VALIDADE", format="DD/MM/YYYY"),
+        "dias": st.column_config.NumberColumn("DIAS", format="%d", help="Dias até vencer (negativo = já venceu)"),
+        "situacao": "SITUAÇÃO",
+        "nome": "NOME",
+        "treinamento": "TREINAMENTO",
+        "filial_nome": "FILIAL",
+        "vinculo_": "VÍNCULO",
+        "funcao": "FUNÇÃO",
+        "data_treinamento": st.column_config.DateColumn("FEITO EM", format="DD/MM/YYYY"),
+    }
+    st.dataframe(tabela, hide_index=True, width="stretch", column_config=colunas)
+    baixar_excel(tabela, colunas, "treinamentos_vencimentos", "ind_tr_xlsx_venc", "Vencimentos")
 
 
 def filiais_sem_treinamento(f: pd.DataFrame, base: pd.DataFrame, filiais: list, hoje: date) -> None:
@@ -624,20 +618,17 @@ def relatorio_treinamentos(f: pd.DataFrame) -> None:
         "data_treinamento", "treinamento", "filial_nome", "instrutor", "nome", "funcao", "setor", "vinculo_",
         "avaliacao", "data_validade",
     ]]
-    st.dataframe(
-        tabela, hide_index=True, width="stretch",
-        column_config={
-            "data_treinamento": st.column_config.DateColumn("DATA", format="DD/MM/YYYY"),
-            "treinamento": "TREINAMENTO",
-            "filial_nome": "FILIAL",
-            "instrutor": "INSTRUTOR",
-            "nome": "NOME",
-            "funcao": "FUNÇÃO",
-            "setor": "SETOR",
-            "vinculo_": "VÍNCULO",
-            "avaliacao": "AVALIAÇÃO",
-            "data_validade": st.column_config.DateColumn("VALIDADE", format="DD/MM/YYYY"),
-        },
-    )
-    st.download_button("⬇️ Baixar CSV", csv_excel(tabela), file_name="indicador_treinamentos.csv",
-                       mime="text/csv", key="ind_tr_csv")
+    colunas = {
+        "data_treinamento": st.column_config.DateColumn("DATA", format="DD/MM/YYYY"),
+        "treinamento": "TREINAMENTO",
+        "filial_nome": "FILIAL",
+        "instrutor": "INSTRUTOR",
+        "nome": "NOME",
+        "funcao": "FUNÇÃO",
+        "setor": "SETOR",
+        "vinculo_": "VÍNCULO",
+        "avaliacao": "AVALIAÇÃO",
+        "data_validade": st.column_config.DateColumn("VALIDADE", format="DD/MM/YYYY"),
+    }
+    st.dataframe(tabela, hide_index=True, width="stretch", column_config=colunas)
+    baixar_excel(tabela, colunas, "indicador_treinamentos", "ind_tr_xlsx", "Treinamentos")
