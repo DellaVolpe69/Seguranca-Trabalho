@@ -1,1069 +1,406 @@
-"""Treinamentos — RQ 10 (Lista de Presença) → segtrabalho_treinamento.
+"""Plano de Ação → segtrabalho_plano_acao.
 
-Uma lista de presença = um treinamento, numa data e filial, com N
-participantes, lançados um a um em campos normais (sem grade). Cada
-participante vira uma linha na tabela.
-
-Nenhum formulário usa st.form: com clear_on_submit os campos seriam apagados
-também quando o insert falhasse. As chaves dos campos levam um número de
-versão, que só avança depois de gravar com sucesso — é isso que limpa a tela.
+Consolida "ações concluídas no prazo" e "ações críticas vencidas" numa base
+só (pedido do MD): a situação não é digitada, é calculada a partir de
+status, prazo_final e data_conclusao.
 """
 
-import io
-import re
-import secrets
-import unicodedata
-from datetime import date, datetime, timedelta, timezone
+from datetime import date
 
-import openpyxl
 import pandas as pd
-import qrcode
 import streamlit as st
-from openpyxl.worksheet.datavalidation import DataValidation
 
 import acesso
 import banco
 import evidencia
 from comum import (
-    garantir_colunas, FUNCOES_RQ05, VAZIO, campo_com_outro, campo_lista, baixar_excel, erro_cpf, fmt_cpf,
-    fmt_data, guardar_msg, mostrar_erros, opcoes_existentes, para_data,
-    render_msg, so_digitos, texto,
+    garantir_colunas, VAZIO, campo_com_outro, campo_lista, campo_sim_nao, baixar_excel, fmt_data,
+    guardar_msg, mostrar_erros, opcoes_existentes, para_data, render_msg, texto,
 )
 from estilo import (
     barra_paginas_lateral, bloco_usuario_lateral, cabecalho_tela, linha_cartoes, titulo_secao,
 )
 
 PAGINAS = {
-    "nova": "Nova lista de presença",
-    "qr": "Presença por QR Code",
-    "registros": "Registros",
+    "nova": "Nova ação",
+    "acompanhamento": "Acompanhamento",
 }
-VINCULOS = ["Frota", "Agregado", "Terceiro", "Interno"]
-# "Avaliação do treinamento" da RQ 10: as 3 carinhas 😊 😐 ☹️ (não é nota)
-AVALIACOES = ["Satisfeito", "Normal", "Insatisfeito"]
+STATUS = ["Em andamento", "Finalizado"]
+CRITICIDADES = ["Baixa", "Média", "Alta", "Crítica"]
+SEM_ACIDENTE = "Sem acidente vinculado"
 COLUNAS = [
-    "id", "nome", "cpf", "data_treinamento", "filial", "funcao", "setor",
-    "treinamento", "instrutor", "vinculo", "data_validade", "avaliacao",
-    "link_evidencia", "link_assinatura", "conteudo_programatico", "link_assinatura_instrutor",
-    "cod_filial", "sessao_id", "criado_em", "criado_por",
+    "id", "acidente_id", "filial", "area", "plano_acao", "criticidade",
+    "responsavel", "data_abertura", "prazo_final", "data_conclusao", "status",
+    "eficaz", "houve_reincidencia", "link_evidencia", "cod_filial", "criado_em", "criado_por",
 ]
-# Planilha de participantes (paliativo enquanto a leitura da RQ 10 escaneada está em stand-by)
-COLUNAS_PLANILHA = ["NOME", "CPF", "FUNÇÃO", "SETOR", "VÍNCULO", "AVALIAÇÃO"]
-MSG_NOVA = "tr_msg_nova"
-MSG_REG = "tr_msg_reg"
-MSG_QR = "tr_msg_qr"
+MSG_NOVA = "pa_msg_nova"
+MSG_REG = "pa_msg_reg"
 
 
 def tela(usuario: dict) -> None:
     cabecalho_tela(
-        "🎓 TREINAMENTOS",
-        "RQ 10 — Lista de Presença: treinamentos, integrações e reciclagens.",
-        "treinamento",
+        "✅ PLANO DE AÇÃO",
+        "Ações de acidentes, inspeções e PGR: prazo, conclusão e eficácia.",
+        "plano_acao",
     )
-    pagina = barra_paginas_lateral("tr_pagina", PAGINAS, "tr")
+    pagina = barra_paginas_lateral("pa_pagina", PAGINAS, "pa")
     bloco_usuario_lateral(usuario)
     df = carregar()
+    acidentes = carregar_acidentes()
     if pagina == "nova":
-        nova_lista(df, usuario)
-    elif pagina == "qr":
-        lista_qr(df, usuario)
+        nova_acao(df, acidentes, usuario)
     else:
-        registros(df)
+        acompanhamento(df, acidentes)
 
 
 def carregar() -> pd.DataFrame:
     try:
-        df = acesso.listar(banco.TREINAMENTO)
+        df = acesso.listar(banco.PLANO_ACAO)
     except Exception as erro:
-        st.error(f"Não foi possível ler {banco.TREINAMENTO}: {erro}")
+        st.error(f"Não foi possível ler {banco.PLANO_ACAO}: {erro}")
         df = pd.DataFrame()
     if df.empty:
         return pd.DataFrame(columns=COLUNAS)
     df = garantir_colunas(df, COLUNAS)
-    for coluna in ("data_treinamento", "data_validade"):
+    for coluna in ("data_abertura", "prazo_final", "data_conclusao"):
         df[coluna] = df[coluna].map(para_data)
     return df
 
 
-def situacao_validade(validade, hoje: date) -> str:
-    if validade is None:
-        return "Sem validade"
-    if validade < hoje:
-        return "Vencido"
-    if validade < hoje + timedelta(days=7):
-        return "Vence em 7 dias"
-    if validade < hoje + timedelta(days=30):
-        return "Vence em 30 dias"
-    return "Válido"
+def ir_para_acidente() -> None:
+    """Atalho do Plano de Ação para o cadastro de acidente (página "Novo relatório")."""
+    st.session_state["tela"] = "acidente"
+    st.session_state["ac_pagina"] = "novo"
 
 
-# ---------------------------------------------------------------------
-# Nova lista de presença
-# ---------------------------------------------------------------------
-# Cada participante é lançado em campos normais e entra numa lista com
-# "➕ Adicionar participante" — mais simples para quem não está acostumado
-# a editar célula por célula numa grade. A lista só vai para o banco no
-# "Salvar", toda de uma vez.
-
-def opcoes_funcao(df: pd.DataFrame) -> list:
-    """Funções da RQ 05 + as que já foram usadas no banco."""
-    return sorted(set(FUNCOES_RQ05) | set(opcoes_existentes(df, "funcao")), key=str.casefold)
-
-
-def nova_lista(df: pd.DataFrame, usuario: dict) -> None:
-    v = st.session_state.setdefault("tr_versao", 0)
-    lista = st.session_state.setdefault(f"tr_lista_{v}", [])
-    render_msg(MSG_NOVA)
-
-    titulo_secao("1. Treinamento", "O que foi aplicado, quando e em qual filial.")
-    treinamento, data_tr, cod_filial, filial = campos_treinamento(df, f"tr_{v}")
-
-    c4, c5, c6 = st.columns([1, 1.5, 2])
-    with c4:
-        validade = campo_validade(f"tr_validade_{v}")
-    with c5:
-        instrutor = campo_instrutor(df, f"tr_instrutor_{v}")
-    with c6:
-        arquivo = evidencia.campo("RQ 10 ASSINADA (PDF ou foto)", f"tr_arquivo_{v}")
-    c7, c8 = st.columns([2.5, 2])
-    with c7:
-        conteudo = campo_conteudo(f"tr_conteudo_{v}")
-    with c8:
-        assinatura_instrutor = campo_assinatura_instrutor(f"tr_ass_instrutor_{v}")
-
-    titulo_secao(
-        "2. Participantes",
-        "Importe uma planilha Excel com todos de uma vez, ou preencha os dados de uma pessoa "
-        "e clique em ➕ Adicionar participante.",
-    )
-    faltando = [n for n, val in (("o treinamento", treinamento), ("a data", data_tr), ("a filial", filial)) if not val]
-    importar_planilha(df, lista, v, faltando)
-    rascunho = campos_participante(df, lista, v)
-    lista_participantes(lista, v)
-
-    total = len(lista)
-    rotulo = f"💾 Salvar lista de presença ({total} participante{'' if total == 1 else 's'})"
-    if st.button(rotulo, type="primary", key=f"tr_salvar_{v}"):
-        salvar_lista(df, usuario, treinamento, data_tr, cod_filial, filial, validade, instrutor,
-                     conteudo, assinatura_instrutor, arquivo, lista, rascunho)
-
-
-def campos_treinamento(df: pd.DataFrame, k: str) -> tuple:
-    """Treinamento, data e filial — os mesmos na lista lançada e na lista por QR Code."""
-    c1, c2, c3 = st.columns([2, 1, 1.5])
-    with c1:
-        treinamento = campo_com_outro(
-            "TREINAMENTO", opcoes_existentes(df, "treinamento"), f"{k}_trein",
-            ajuda="Ex.: NR-35 Trabalho em Altura, Integração de Agregados, Direção Defensiva",
-        )
-    with c2:
-        data_tr = st.date_input("DATA DO TREINAMENTO", value=date.today(), format="DD/MM/YYYY", key=f"{k}_data")
-    with c3:
-        cod_filial, filial = acesso.campo_filial("FILIAL", f"{k}_filial")
-    return treinamento, data_tr, cod_filial, filial
-
-
-def campo_instrutor(df: pd.DataFrame, key: str, valor_atual=None):
-    """Lista com os instrutores já usados: o mesmo nome sempre igual, para medir quem mais treina."""
-    return campo_com_outro(
-        "INSTRUTOR", opcoes_existentes(df, "instrutor"), key, valor_atual,
-        ajuda="Quem aplicou o treinamento. Se não estiver na lista, escolha OUTRO e digite o nome.",
-    )
-
-
-def campo_conteudo(key: str):
-    """Conteúdo programático da RQ 10: o que foi discutido (um assunto por linha). Sai no PDF."""
-    valor = st.text_area(
-        "CONTEÚDO PROGRAMÁTICO", key=key, height=120,
-        placeholder="Um assunto por linha. Ex.:\n- Acondicionamento de material\n- Amarração",
-        help="O que foi discutido no treinamento. Sai no PDF da lista de presença.",
-    )
-    return (valor or "").strip() or None  # mantém as quebras de linha
-
-
-def campo_assinatura_instrutor(key: str):
-    """Quadro de assinatura (o mesmo do celular). Devolve o PNG ou None."""
+def carregar_acidentes() -> dict:
+    """{id: rótulo} para vincular a ação a um acidente."""
     try:
-        from assinatura import campo_assinatura
-        st.markdown("**ASSINATURA DO INSTRUTOR**")
-        png = campo_assinatura(key)
+        df = acesso.listar(banco.ACIDENTE)
     except Exception as erro:
-        st.warning(f"Quadro de assinatura indisponível: {erro}")
+        st.warning(f"Não foi possível ler os acidentes ({banco.ACIDENTE}): {erro}")
+        return {}
+    if df.empty:
+        return {}
+    rotulos = {}
+    for _, a in df.iterrows():
+        descricao = (texto(a.get("descricao")) or "")[:50]
+        rotulos[int(a["id"])] = (
+            f"#{int(a['id'])} · {fmt_data(a.get('data_evento'))} · "
+            f"{texto(a.get('filial_origem')) or ''} · {descricao}"
+        )
+    return rotulos
+
+
+# ---------------------------------------------------------------------
+# Situação de prazo (calculada, nunca digitada)
+# ---------------------------------------------------------------------
+
+def situacao(acao: pd.Series, hoje: date) -> str:
+    prazo, conclusao = acao["prazo_final"], acao["data_conclusao"]
+    if acao["status"] == "Finalizado":
+        if prazo is None or conclusao is None:
+            return "Concluída (sem data)"
+        return "Concluída no prazo" if conclusao <= prazo else "Concluída com atraso"
+    if prazo is not None and prazo < hoje:
+        return "Vencida"
+    return "No prazo"
+
+
+def dias_atraso(acao: pd.Series, hoje: date):
+    prazo, conclusao = acao["prazo_final"], acao["data_conclusao"]
+    if prazo is None:
         return None
-    if png:
-        st.image(png, width=180)
-    return png
+    fim = conclusao if acao["status"] == "Finalizado" else hoje
+    if fim is None:
+        return None
+    return max((fim - prazo).days, 0)
 
 
-def subir_assinatura_instrutor(png, instrutor, treinamento, data_tr):
-    return evidencia.subir_assinatura(png, instrutor or "instrutor", treinamento, data_tr,
-                                      pasta=evidencia.PASTA_ASSINATURAS_INSTRUTOR)
+def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
+    hoje = date.today()
+    df = df.copy()
+    df["situacao"] = df.apply(lambda a: situacao(a, hoje), axis=1)
+    df["dias_atraso"] = pd.to_numeric(df.apply(lambda a: dias_atraso(a, hoje), axis=1), errors="coerce")
+    df["critica_vencida"] = (df["criticidade"] == "Crítica") & (df["situacao"] == "Vencida")
+    df["dias_para_concluir"] = pd.to_numeric(
+        df.apply(
+            lambda a: (a["data_conclusao"] - a["data_abertura"]).days
+            if a["data_conclusao"] is not None and a["data_abertura"] is not None else None,
+            axis=1,
+        ),
+        errors="coerce",
+    )
+    return df
 
 
-def campo_validade(key: str):
-    return st.date_input(
-        "VALIDADE DO TREINAMENTO", value=None, format="DD/MM/YYYY", key=key,
-        help="Deixe em branco se o treinamento não vence (DDS, campanha).",
+# ---------------------------------------------------------------------
+# Campos (os mesmos na criação e na edição)
+# ---------------------------------------------------------------------
+
+def campos_acao(df: pd.DataFrame, acidentes: dict, k: str, atual: dict) -> dict:
+    """Desenha o formulário e devolve os valores digitados."""
+    opcoes_acidente = [SEM_ACIDENTE] + list(acidentes)
+    atual_acidente = atual.get("acidente_id")
+    indice = opcoes_acidente.index(int(atual_acidente)) if (
+        atual_acidente is not None and not pd.isna(atual_acidente)
+        and int(atual_acidente) in acidentes
+    ) else 0
+    acidente = st.selectbox(
+        "ACIDENTE VINCULADO", opcoes_acidente, index=indice, key=f"{k}_acidente",
+        format_func=lambda o: o if o == SEM_ACIDENTE else acidentes[o],
+        help="Deixe sem vínculo para ações de inspeção, PGR ou auditoria.",
+    )
+    if not acidentes:
+        aviso, botao = st.columns([3, 1.2])
+        aviso.caption("Nenhum acidente cadastrado ainda. Para vincular a ação a um acidente, "
+                      "cadastre o acidente primeiro.")
+        botao.button("🚛 Cadastrar acidente", key=f"{k}_ir_acidente", on_click=ir_para_acidente,
+                     help="Abre a tela de Acidentes. O que foi digitado nesta ação não é guardado.")
+
+    c1, c2, c3 = st.columns([1.4, 1.4, 1])
+    with c1:
+        cod_filial, filial = acesso.campo_filial("FILIAL", f"{k}_filial", atual.get("cod_filial"))
+    with c2:
+        area = campo_com_outro("ÁREA", opcoes_existentes(df, "area"), f"{k}_area", atual.get("area"))
+    with c3:
+        criticidade = campo_lista("CRITICIDADE", CRITICIDADES, f"{k}_crit", atual.get("criticidade"))
+
+    plano = st.text_area(
+        "PLANO DE AÇÃO", value=texto(atual.get("plano_acao")) or "", key=f"{k}_plano", height=90
     )
 
+    c4, c5, c6 = st.columns([1.6, 1, 1])
+    with c4:
+        responsavel = campo_com_outro(
+            "RESPONSÁVEL", opcoes_existentes(df, "responsavel"), f"{k}_resp", atual.get("responsavel")
+        )
+    with c5:
+        abertura = st.date_input(
+            "DATA DE ABERTURA", value=atual.get("data_abertura") or date.today(),
+            format="DD/MM/YYYY", key=f"{k}_abertura",
+        )
+    with c6:
+        prazo = st.date_input(
+            "PRAZO FINAL", value=atual.get("prazo_final"), format="DD/MM/YYYY", key=f"{k}_prazo"
+        )
 
-def erros_treinamento(treinamento, data_tr, filial, validade) -> list:
+    c7, c8, c9, c10 = st.columns(4)
+    with c7:
+        status_atual = atual.get("status") if atual.get("status") in STATUS else STATUS[0]
+        status = st.selectbox("STATUS", STATUS, index=STATUS.index(status_atual), key=f"{k}_status")
+    conclusao, eficaz, reincidencia = None, None, None
+    if status == "Finalizado":
+        with c8:
+            conclusao = st.date_input(
+                "DATA DE CONCLUSÃO", value=atual.get("data_conclusao") or date.today(),
+                format="DD/MM/YYYY", key=f"{k}_conclusao",
+            )
+        with c9:
+            eficaz = campo_sim_nao("AÇÃO EFICAZ?", f"{k}_eficaz", atual.get("eficaz"))
+        with c10:
+            reincidencia = campo_sim_nao(
+                "HOUVE REINCIDÊNCIA?", f"{k}_reinc", atual.get("houve_reincidencia")
+            )
+
+    link_atual = texto(atual.get("link_evidencia"))
+    if link_atual:
+        evidencia.mostrar(link_atual)
+    arquivo = evidencia.campo(
+        "SUBSTITUIR EVIDÊNCIA" if link_atual else "ANEXAR EVIDÊNCIA DA AÇÃO", f"{k}_arquivo"
+    )
+
+    return {
+        "acidente_id": None if acidente == SEM_ACIDENTE else int(acidente),
+        "filial": filial,
+        "cod_filial": cod_filial,
+        "area": area,
+        "plano_acao": texto(plano),
+        "criticidade": criticidade,
+        "responsavel": responsavel,
+        "data_abertura": abertura,
+        "prazo_final": prazo,
+        "data_conclusao": conclusao,
+        "status": status,
+        "eficaz": eficaz,
+        "houve_reincidencia": reincidencia,
+        "link_evidencia": link_atual,
+        "_arquivo": arquivo,  # não é coluna: sai antes de gravar
+    }
+
+
+def validar(d: dict) -> list:
     erros = []
-    if not treinamento:
-        erros.append("Informe o treinamento.")
-    if not data_tr:
-        erros.append("Informe a data do treinamento.")
-    if not filial:
+    if not d["filial"]:
         erros.append("Informe a filial.")
-    if validade and data_tr and validade < data_tr:
-        erros.append("A validade não pode ser anterior à data do treinamento.")
+    if not d["plano_acao"]:
+        erros.append("Descreva o plano de ação.")
+    if not d["criticidade"]:
+        erros.append("Informe a criticidade.")
+    if not d["responsavel"]:
+        erros.append("Informe o responsável.")
+    if not d["data_abertura"]:
+        erros.append("Informe a data de abertura.")
+    if not d["prazo_final"]:
+        erros.append("Informe o prazo final.")
+    elif d["data_abertura"] and d["prazo_final"] < d["data_abertura"]:
+        erros.append("O prazo final não pode ser anterior à abertura.")
+    if d["status"] == "Finalizado":
+        if not d["data_conclusao"]:
+            erros.append("Ação finalizada precisa da data de conclusão.")
+        elif d["data_abertura"] and d["data_conclusao"] < d["data_abertura"]:
+            erros.append("A conclusão não pode ser anterior à abertura.")
+        elif d["data_conclusao"] > date.today():
+            erros.append("A data de conclusão não pode estar no futuro.")
     return erros
 
 
-def importar_planilha(df: pd.DataFrame, lista: list, v: int, faltando: list) -> None:
-    """Upload do xlsx: quem passa na validação entra na lista abaixo (dá para conferir e remover).
-
-    O quadro fica sempre à vista (o modelo dá para baixar a qualquer hora); o
-    upload só libera depois do treinamento, da data e da filial — é a eles que
-    os participantes da planilha ficam ligados.
-    """
-    iv = st.session_state.setdefault("tr_iv", 0)  # avança a cada importação: limpa o campo do arquivo
-    with st.container(border=True):
-        st.markdown("**📥 Importar participantes de uma planilha Excel**")
-        if faltando:
-            lista_faltando = " e ".join([", ".join(faltando[:-1]), faltando[-1]] if len(faltando) > 1 else faltando)
-            st.caption(f"Para subir a planilha, preencha antes {lista_faltando} na seção 1.")
-        c1, c2 = st.columns([3, 1])
-        with c1:
-            arquivo = st.file_uploader("PLANILHA (.xlsx)", type=["xlsx"], key=f"tr_xlsx_{v}_{iv}",
-                                       disabled=bool(faltando))
-        with c2:
-            st.write("")
-            st.download_button(
-                "⬇️ Baixar modelo", modelo_planilha(), file_name="modelo_participantes_rq10.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"tr_modelo_{v}",
-            )
-        if arquivo:
-            novos, erros = ler_planilha(arquivo, df, lista)
-            lista.extend(novos)
-            st.session_state[f"tr_imp_{v}"] = (len(novos), erros)
-            st.session_state["tr_iv"] += 1
-            st.rerun()
-
-        importados, erros = st.session_state.get(f"tr_imp_{v}", (0, []))
-        if importados:
-            st.success(f"{importados} participante{'' if importados == 1 else 's'} da planilha "
-                       "entraram na lista abaixo. Confira antes de salvar.")
-        if erros:
-            st.warning(f"{len(erros)} linha{'' if len(erros) == 1 else 's'} da planilha não "
-                       "entraram — corrija e importe de novo, ou lance à mão:\n\n"
-                       + "\n".join(f"- {e}" for e in erros))
-
-
-def modelo_planilha() -> bytes:
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Participantes"
-    ws.append(COLUNAS_PLANILHA)
-    for coluna, largura in zip("ABCDEF", (40, 16, 28, 20, 14, 16)):
-        ws.column_dimensions[coluna].width = largura
-    for linha in range(2, 202):
-        ws.cell(linha, 2).number_format = "@"  # CPF como texto: o Excel não come o zero da frente
-    for coluna, opcoes in (("E", VINCULOS), ("F", AVALIACOES)):
-        lista_suspensa = DataValidation(type="list", formula1=f'"{",".join(opcoes)}"', allow_blank=True)
-        lista_suspensa.add(f"{coluna}2:{coluna}201")
-        ws.add_data_validation(lista_suspensa)
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    return buffer.getvalue()
-
-
-def chave(valor) -> str:
-    """'Função ' -> 'FUNCAO': compara sem acento, caixa e espaços."""
-    s = unicodedata.normalize("NFD", texto(valor) or "")
-    return "".join(c for c in s if unicodedata.category(c) != "Mn").upper()
-
-
-def casar(valor, opcoes: list):
-    """Valor como já existe nas opções ('motorista' -> 'Motorista'); senão, como veio."""
-    por_chave = {chave(o): o for o in opcoes}
-    return por_chave.get(chave(valor), texto(valor))
-
-
-def ler_planilha(arquivo, df: pd.DataFrame, lista: list) -> tuple:
-    """(participantes válidos, erros por linha). Primeira linha = cabeçalho do modelo."""
-    try:
-        bruto = pd.read_excel(arquivo, dtype=str)  # texto: CPF não perde o zero da frente
-    except Exception as erro:
-        return [], [f"Não foi possível ler a planilha: {erro}"]
-    bruto.columns = ["NOME" if chave(c).startswith("NOME") else chave(c) for c in bruto.columns]
-    faltando = [c for c in ("NOME", "CPF") if c not in bruto]
-    if faltando:
-        return [], [f"A primeira linha precisa ter a coluna {' e '.join(faltando)}. Use o modelo."]
-
-    ja_na_lista = {p["cpf"] for p in lista}
-    funcoes, setores = opcoes_funcao(df), opcoes_existentes(df, "setor")
-    novos, erros = [], []
-    for n, linha in enumerate(bruto.to_dict("records"), start=2):  # n = linha no Excel
-        nome = texto(linha.get("NOME"))
-        cpf_bruto = re.sub(r"\.0$", "", texto(linha.get("CPF")) or "")
-        if not nome and not cpf_bruto:
-            continue  # linha em branco
-        cpf = so_digitos(cpf_bruto)
-        if cpf_bruto.isdigit() and 9 <= len(cpf) < 11:
-            cpf = cpf.zfill(11)  # CPF digitado como número: o Excel tirou o zero da frente
-
-        problemas = []
-        if not nome:
-            problemas.append("sem nome")
-        if erro_cpf(cpf):
-            problemas.append(erro_cpf(cpf))
-        elif cpf in ja_na_lista:
-            problemas.append("pessoa repetida (já está na lista)")
-        vinculo, avaliacao = casar(linha.get("VINCULO"), VINCULOS), casar(linha.get("AVALIACAO"), AVALIACOES)
-        if vinculo and vinculo not in VINCULOS:
-            problemas.append(f"vínculo “{vinculo}” não é da lista ({', '.join(VINCULOS)})")
-        if avaliacao and avaliacao not in AVALIACOES:
-            problemas.append(f"avaliação “{avaliacao}” não é da lista ({', '.join(AVALIACOES)})")
-
-        if problemas:
-            erros.append(f"Linha {n} ({nome or 'sem nome'}): {'; '.join(problemas)}")
-            continue
-        ja_na_lista.add(cpf)
-        novos.append({
-            "nome": nome, "cpf": cpf,
-            "funcao": casar(linha.get("FUNCAO"), funcoes), "setor": casar(linha.get("SETOR"), setores),
-            "vinculo": vinculo, "avaliacao": avaliacao,
-        })
-    if not novos and not erros:
-        erros.append("A planilha não tem nenhum participante preenchido.")
-    return novos, erros
-
-
-def campos_participante(df: pd.DataFrame, lista: list, v: int) -> bool:
-    """Campos de UM participante + botão Adicionar. Devolve True se sobrou algo digitado."""
-    pv = st.session_state.setdefault("tr_pv", 0)  # avança a cada pessoa adicionada: limpa os campos
-    k = f"tr_p_{v}_{pv}"
-
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        nome = st.text_input("NOME COMPLETO", key=f"{k}_nome")
-    with c2:
-        cpf = st.text_input("CPF", key=f"{k}_cpf", placeholder="000.000.000-00")
-
-    c3, c4, c5, c6 = st.columns([1.6, 1.4, 1, 1])
-    with c3:
-        funcao = campo_com_outro("FUNÇÃO", opcoes_funcao(df), f"{k}_funcao")
-    with c4:
-        setor = campo_com_outro("SETOR", opcoes_existentes(df, "setor"), f"{k}_setor")
-    with c5:
-        vinculo = campo_lista("VÍNCULO", VINCULOS, f"{k}_vinculo")
-    with c6:
-        avaliacao = campo_lista("AVALIAÇÃO DO TREINAMENTO", AVALIACOES, f"{k}_aval")
-
-    if st.button("➕ Adicionar participante", key=f"{k}_add"):
-        cpf_limpo = so_digitos(cpf)
-        erros = []
-        if not texto(nome):
-            erros.append("Informe o nome.")
-        if erro_cpf(cpf_limpo):
-            erros.append(erro_cpf(cpf_limpo))
-        elif any(p["cpf"] == cpf_limpo for p in lista):
-            erros.append("Essa pessoa já está na lista.")
-        if erros:
-            mostrar_erros(erros, "Corrija antes de adicionar:")
-        else:
-            lista.append({
-                "nome": texto(nome), "cpf": cpf_limpo, "funcao": funcao, "setor": setor,
-                "vinculo": vinculo, "avaliacao": avaliacao,
-            })
-            st.session_state["tr_pv"] += 1
-            st.rerun()
-
-    return bool(texto(nome) or so_digitos(cpf))
-
-
-def lista_participantes(lista: list, v: int) -> None:
-    if not lista:
-        st.caption("Nenhum participante adicionado ainda.")
-        return
-    st.markdown(f"**👥 Participantes desta lista: {len(lista)}** — confira e use 🗑️ para retirar quem "
-                "entrou errado. Nada é gravado até clicar em 💾 Salvar.")
-    with st.container(border=True):
-        for i, p in enumerate(lista):
-            detalhes = " · ".join([
-                fmt_cpf(p["cpf"]), p["funcao"] or VAZIO, p["setor"] or VAZIO,
-                p["vinculo"] or VAZIO, f"avaliação: {p['avaliacao'] or VAZIO}",
-            ])
-            texto_col, botao_col = st.columns([9, 1])
-            texto_col.markdown(f"**{i + 1}. {p['nome']}**  \n{detalhes}")
-            # on_click roda antes do rerun: o índice ainda é o desta linha
-            botao_col.button("🗑️", key=f"tr_rm_{v}_{i}", help="Remover da lista",
-                             on_click=lista.pop, args=(i,))
-
-
-def salvar_lista(df, usuario, treinamento, data_tr, cod_filial, filial, validade, instrutor,
-                 conteudo, assinatura_instrutor, arquivo, lista, rascunho) -> None:
-    erros = erros_treinamento(treinamento, data_tr, filial, validade)
-    if rascunho:
-        erros.append("Há um participante preenchido que não entrou na lista: clique em "
-                     "➕ Adicionar participante (ou apague os campos) antes de salvar.")
-    if not lista:
-        erros.append("Adicione pelo menos um participante.")
-
-    # quem já está lançado neste treinamento nesta data (evita gravar a lista duas vezes)
-    if not df.empty and treinamento and data_tr:
-        mesmo = df[(df["treinamento"] == treinamento) & (df["data_treinamento"] == data_tr)]
-        ja_lancados = set(mesmo["cpf"].map(so_digitos))
-        for p in lista:
-            if p["cpf"] in ja_lancados:
-                erros.append(f"{p['nome']} já está lançado(a) neste treinamento nesta data.")
-
-    if erros:
-        mostrar_erros(erros)
-        return
-
-    linhas = [{
-        **p,
-        "data_treinamento": data_tr,
-        "filial": filial,
-        "cod_filial": cod_filial,
-        "treinamento": treinamento,
-        "instrutor": instrutor,
-        "conteudo_programatico": conteudo,
-        "data_validade": validade,
-        "link_evidencia": None,
-        "criado_por": usuario["email"],
-    } for p in lista]
-
-    def salvar(caminho):
-        assinatura = None
-        if assinatura_instrutor:
-            try:
-                assinatura = subir_assinatura_instrutor(assinatura_instrutor, instrutor, treinamento, data_tr)
-            except Exception as erro:
-                return False, f"Não salvou a assinatura do instrutor: {erro}"
-        for linha in linhas:  # o mesmo arquivo e a mesma assinatura valem para todos os participantes
-            linha["link_evidencia"] = caminho
-            linha["link_assinatura_instrutor"] = assinatura
-        ok, msg = banco.inserir(banco.TREINAMENTO, linhas)
-        if not ok and assinatura:
-            evidencia.remover(assinatura)
-        return ok, msg
-
-    nome = evidencia.nome_lista_fisica(treinamento, filial, instrutor, data_tr)
-    ok, msg = evidencia.gravar(arquivo, evidencia.PASTA_LISTAS_FISICAS, salvar, nome)
-    if not ok:
-        st.error(msg)  # nada foi limpo: a lista continua na tela
-        return
-    guardar_msg(MSG_NOVA, "success", f"Lista de presença salva — {msg}")
-    st.session_state.pop(f"tr_lista_{st.session_state['tr_versao']}", None)
-    st.session_state["tr_versao"] += 1
-    st.session_state["tr_pv"] += 1
-    st.rerun()
-
-
 # ---------------------------------------------------------------------
-# Presença por QR Code
+# Nova ação
 # ---------------------------------------------------------------------
-# O TST abre a lista (treinamento, data, filial, validade) e mostra o QR.
-# Cada participante se registra no próprio celular (pagina_presenca.py, sem
-# login) e já grava no banco. O QR funciona até o TST encerrar a lista.
 
-def lista_qr(df: pd.DataFrame, usuario: dict) -> None:
-    render_msg(MSG_QR)
-    try:
-        abertas = listas_abertas()
-    except Exception as erro:
-        st.error(f"Não foi possível ler {banco.SESSAO}: {erro}")
-        return
-    acompanhando = next((s for s in abertas if s["id"] == st.session_state.get("tr_qr_sessao")), None)
-    if acompanhando:
-        acompanhar(acompanhando)
-    else:
-        abrir_lista(df, usuario)
-        mostrar_abertas(abertas)
+def nova_acao(df: pd.DataFrame, acidentes: dict, usuario: dict) -> None:
+    v = st.session_state.setdefault("pa_versao", 0)
+    render_msg(MSG_NOVA)
+    # vindo de "➕ Nova ação para este acidente": acidente e filial já preenchidos
+    dados = campos_acao(df, acidentes, f"pa_nova_{v}", st.session_state.pop("pa_prefill", {}))
 
-
-def listas_abertas() -> list:
-    """Listas ainda não encerradas, das filiais do usuário."""
-    abertas = banco.buscar(banco.SESSAO, encerrada_em=None)
-    if acesso.perfil()["admin"]:
-        return abertas
-    return [s for s in abertas if s["cod_filial"] in acesso.perfil()["codigos"]]
-
-
-def abrir_lista(df: pd.DataFrame, usuario: dict) -> None:
-    v = st.session_state.setdefault("tr_qr_v", 0)
-    titulo_secao("1. Treinamento", "Preencha e gere o QR Code. Os participantes escaneiam e "
-                                   "se registram no próprio celular.")
-    treinamento, data_tr, cod_filial, filial = campos_treinamento(df, f"tr_qr_{v}")
-    c1, c2, _ = st.columns([1, 1.5, 2])
-    with c1:
-        validade = campo_validade(f"tr_qr_{v}_validade")
-    with c2:
-        instrutor = campo_instrutor(df, f"tr_qr_{v}_instrutor")
-    conteudo = campo_conteudo(f"tr_qr_{v}_conteudo")
-
-    if not st.button("📱 Gerar QR Code da lista", type="primary", key=f"tr_qr_{v}_gerar"):
-        return
-    erros = erros_treinamento(treinamento, data_tr, filial, validade)
-    if erros:
-        mostrar_erros(erros)
-        return
-    codigo = secrets.token_urlsafe(16)  # vai no link: aleatório, impossível de adivinhar
-    ok, msg = banco.inserir(banco.SESSAO, [{
-        "codigo": codigo, "treinamento": treinamento, "data_treinamento": data_tr,
-        "filial": filial, "cod_filial": cod_filial, "data_validade": validade,
-        "instrutor": instrutor, "conteudo_programatico": conteudo, "criado_por": usuario["email"],
-    }])
-    if not ok:
-        st.error(msg)
-        return
-    st.session_state["tr_qr_sessao"] = banco.buscar(banco.SESSAO, codigo=codigo)[0]["id"]
-    st.session_state["tr_qr_v"] += 1
-    st.rerun()
-
-
-def mostrar_abertas(abertas: list) -> None:
-    if not abertas:
-        return
-    titulo_secao("Listas abertas", "O QR Code delas ainda funciona. Acompanhe, encerre ou cancele.")
-    with st.container(border=True):
-        for s in abertas:
-            texto_col, botao_col, cancelar_col = st.columns([6, 1.4, 1.2])
-            texto_col.markdown(
-                f"**{s['treinamento']}**  \n{fmt_data(s['data_treinamento'])} · {s['filial']} · "
-                f"aberta por {s['criado_por']}"
-            )
-            botao_col.button("Acompanhar", key=f"tr_qr_abrir_{s['id']}",
-                             on_click=st.session_state.__setitem__, args=("tr_qr_sessao", s["id"]))
-            cancelar_col.button("🗑️ Cancelar", key=f"tr_qr_cancelar_{s['id']}",
-                                on_click=st.session_state.__setitem__, args=("tr_qr_cancelando", s["id"]))
-            if st.session_state.get("tr_qr_cancelando") == s["id"]:
-                confirmar_cancelamento(s)
-
-
-def confirmar_cancelamento(sessao: dict) -> None:
-    """Pede confirmação: cancelar apaga a lista e quem já se registrou nela."""
-    try:
-        registrados = banco.buscar(banco.TREINAMENTO, sessao_id=sessao["id"])
-    except Exception as erro:
-        st.error(f"Não foi possível ler os participantes: {erro}")
-        return
-    n = len(registrados)
-    st.warning(
-        f"Cancelar a lista **{sessao['treinamento']}** de {fmt_data(sessao['data_treinamento'])}? "
-        "O QR Code para de funcionar na hora"
-        + (f" e **{n} participante{'' if n == 1 else 's'} já registrado{'' if n == 1 else 's'}** "
-           "(com as assinaturas) será apagado." if n else ". Ninguém se registrou ainda.")
-    )
-    sim, nao, _ = st.columns([1.4, 1, 4])
-    if sim.button("Sim, cancelar a lista", type="primary", key=f"tr_qr_cancelar_sim_{sessao['id']}"):
-        cancelar_lista(sessao, registrados)
-    nao.button("Não", key=f"tr_qr_cancelar_nao_{sessao['id']}",
-               on_click=st.session_state.pop, args=("tr_qr_cancelando", None))
-
-
-def cancelar_lista(sessao: dict, registrados: list) -> None:
-    # 1º os participantes (eles apontam para a lista), depois a lista
-    ok, msg = banco.excluir_onde(banco.TREINAMENTO, "sessao_id", sessao["id"])
-    if not ok:
-        st.error(msg)
-        return
-    ok, msg = banco.excluir(banco.SESSAO, sessao["id"])
-    if not ok:
-        st.error(f"Os participantes foram apagados, mas a lista não: {msg}. Tente cancelar de novo.")
-        return
-    for p in registrados:  # cancelada = lançada por engano: não deixa nome/assinatura solta no MinIO
-        if texto(p.get("link_assinatura")):
-            evidencia.remover(p["link_assinatura"])
-    st.session_state.pop("tr_qr_cancelando", None)
-    if st.session_state.get("tr_qr_sessao") == sessao["id"]:
-        st.session_state.pop("tr_qr_sessao", None)
-    guardar_msg(MSG_QR, "success", f"Lista “{sessao['treinamento']}” cancelada.")
-    st.rerun()
-
-
-def link_presenca(codigo: str) -> str:
-    # APP_URL nos secrets; se não houver, o endereço de volta do login Azure é o do app
-    base = banco.secret("APP_URL") or banco.secret("AZURE_REDIRECT_URI") or ""
-    return f"{str(base).rstrip('/')}/?presenca={codigo}"
-
-
-def imagem_qr(link: str) -> bytes:
-    buffer = io.BytesIO()
-    qrcode.make(link, box_size=10, border=2).save(buffer, format="PNG")
-    return buffer.getvalue()
-
-
-def acompanhar(sessao: dict) -> None:
-    titulo_secao(
-        f"📱 {sessao['treinamento']}",
-        f"{fmt_data(sessao['data_treinamento'])} · {sessao['filial']} · validade: "
-        f"{fmt_data(sessao['data_validade']) or 'sem validade'} · instrutor: "
-        f"{sessao.get('instrutor') or VAZIO} · aberta por {sessao['criado_por']}",
-    )
-    link = link_presenca(sessao["codigo"])
-    c1, c2 = st.columns([1, 1.6])
-    with c1:
-        st.image(imagem_qr(link), width=320)
-        st.caption("Mostre na tela ou projete. Quem não conseguir escanear pode abrir o link:")
-        st.code(link, language=None, wrap_lines=True)
-    with c2:
-        participantes_ao_vivo(sessao["id"])
-
-    lista_fisica(sessao)
-
-    titulo_secao("Encerrar a lista", "Depois de encerrar, o QR Code para de funcionar e a lista "
-                                     "vai para Registros.")
-    k = f"tr_qr_fim_{sessao['id']}"
-    if sessao.get("conteudo_programatico"):
-        st.caption("Conteúdo programático: " + sessao["conteudo_programatico"].replace("\n", " · "))
-    assinatura_instrutor = campo_assinatura_instrutor(f"{k}_ass_instrutor")
-    confirmar = st.checkbox("Todos já se registraram — quero encerrar a lista", key=f"{k}_confirma")
-    b1, b2, _ = st.columns([1.3, 1.6, 3])
-    if b1.button("🔒 Encerrar lista", type="primary", key=f"{k}_encerrar", disabled=not confirmar):
-        encerrar(sessao, assinatura_instrutor)
-    b2.button("⬅️ Voltar (a lista continua aberta)", key=f"{k}_voltar",
-              on_click=st.session_state.pop, args=("tr_qr_sessao", None))
-
-
-@st.fragment(run_every=5)
-def participantes_ao_vivo(sessao_id: int) -> None:
-    """Quem já se registrou. Roda de novo sozinho a cada 5 s (só este bloco, não a tela)."""
-    try:
-        linhas = banco.buscar(banco.TREINAMENTO, sessao_id=sessao_id)
-    except Exception as erro:
-        st.error(f"Não foi possível ler os participantes: {erro}")
-        return
-    st.markdown(f"**{len(linhas)} participante{'' if len(linhas) == 1 else 's'} registrado"
-                f"{'' if len(linhas) == 1 else 's'}** · atualiza sozinho a cada 5 segundos")
-    if not linhas:
-        st.caption("Ninguém se registrou ainda.")
-        return
-    tabela = garantir_colunas(pd.DataFrame(linhas), ["link_assinatura"])
-    tabela["assinou"] = tabela["link_assinatura"].map(lambda l: "✍️ Sim" if texto(l) else "—")
-    tabela["registro"] = tabela["criado_em"].map(data_hora_local)
-    tabela = tabela[["registro", "nome", "cpf", "funcao", "vinculo", "avaliacao", "assinou"]]
-    tabela["cpf"] = tabela["cpf"].map(fmt_cpf)
-    st.dataframe(tabela.fillna(""), hide_index=True, width="stretch", column_config={
-        "nome": "NOME", "cpf": "CPF", "funcao": "FUNÇÃO", "vinculo": "VÍNCULO", "avaliacao": "AVALIAÇÃO",
-        "assinou": "ASSINOU", "registro": "REGISTRO",
-    })
-
-    rv = st.session_state.setdefault("tr_qr_rm_v", 0)  # avança a cada remoção: limpa a escolha
-    por_id = {l["id"]: f"{l['nome']} · {fmt_cpf(l['cpf'])}" for l in linhas}
-    c1, c2 = st.columns([3, 1])
-    with c1:
-        escolhido = st.selectbox("REMOVER ALGUÉM QUE NÃO PARTICIPOU", [None] + list(por_id),
-                                 format_func=lambda i: VAZIO if i is None else por_id[i],
-                                 key=f"tr_qr_rm_{sessao_id}_{rv}")
-    with c2:
-        st.write("")
-        remover = st.button("🗑️ Remover", key=f"tr_qr_rm_btn_{sessao_id}_{rv}", disabled=escolhido is None)
-    if remover:
-        ok, msg = banco.excluir(banco.TREINAMENTO, escolhido)
+    if st.button("💾 Salvar ação", type="primary", key=f"pa_salvar_{v}"):
+        erros = validar(dados)
+        if erros:
+            mostrar_erros(erros)
+            return
+        dados["criado_por"] = usuario["email"]
+        arquivo = dados.pop("_arquivo")
+        ok, msg = evidencia.gravar(arquivo, "plano_acao", lambda caminho: banco.inserir(
+            banco.PLANO_ACAO, [{**dados, "link_evidencia": caminho or dados["link_evidencia"]}]))
         if not ok:
             st.error(msg)
             return
-        st.session_state["tr_qr_rm_v"] += 1
-        st.rerun(scope="fragment")
-
-
-def lista_fisica(sessao: dict) -> None:
-    """RQ 10 de papel escaneada: dá para anexar (ou trocar) enquanto a lista está aberta."""
-    titulo_secao("📎 Lista física (RQ 10 assinada)",
-                 "Anexe a folha escaneada a qualquer momento. Fica ligada a esta lista e "
-                 "a todos os participantes, inclusive quem se registrar depois.")
-    k = f"tr_qr_fisica_{sessao['id']}"
-    fv = st.session_state.setdefault(f"{k}_v", 0)  # avança a cada anexo: limpa o campo
-    atual = texto(sessao.get("link_evidencia"))
-    if atual:
-        st.caption(f"Anexada: {atual.rsplit('/', 1)[-1]}")
-        evidencia.mostrar(atual, "📎 Abrir lista física")
-    c1, c2 = st.columns([3, 1])
-    with c1:
-        arquivo = evidencia.campo("TROCAR ARQUIVO (PDF ou foto)" if atual else "RQ 10 ASSINADA (PDF ou foto)",
-                                  f"{k}_{fv}")
-    with c2:
-        st.write("")
-        anexar = st.button("📎 Anexar", key=f"{k}_anexar_{fv}", disabled=arquivo is None)
-    if not anexar:
-        return
-    nome = evidencia.nome_lista_fisica(sessao["treinamento"], sessao["filial"], sessao.get("instrutor"),
-                                       sessao["data_treinamento"])
-
-    def salvar(caminho):
-        ok, msg = banco.atualizar(banco.SESSAO, sessao["id"], {"link_evidencia": caminho})
-        if ok:  # quem já se registrou também fica com a lista física
-            ok, msg = banco.atualizar_onde(banco.TREINAMENTO, "sessao_id", sessao["id"],
-                                           {"link_evidencia": caminho})
-        return ok, msg
-
-    ok, msg = evidencia.gravar(arquivo, evidencia.PASTA_LISTAS_FISICAS, salvar, nome)
-    if not ok:
-        st.error(msg)
-        return
-    st.session_state[f"{k}_v"] = fv + 1
-    guardar_msg(MSG_QR, "success", "Lista física anexada.")
-    st.rerun()
-
-
-def encerrar(sessao: dict, assinatura_instrutor=None) -> None:
-    # assinatura do instrutor em todos os participantes da lista
-    if assinatura_instrutor:
-        try:
-            caminho = subir_assinatura_instrutor(assinatura_instrutor, sessao.get("instrutor"),
-                                                 sessao["treinamento"], sessao["data_treinamento"])
-        except Exception as erro:
-            st.error(f"Não salvou a assinatura do instrutor: {erro}")
-            return
-        ok, msg = banco.atualizar_onde(banco.TREINAMENTO, "sessao_id", sessao["id"],
-                                       {"link_assinatura_instrutor": caminho})
-        if not ok:
-            evidencia.remover(caminho)
-            st.error(msg)
-            return
-    ok, msg = banco.atualizar(banco.SESSAO, sessao["id"], {"encerrada_em": datetime.now(timezone.utc)})
-    if not ok:
-        st.error(f"A lista continua aberta — tente encerrar de novo. ({msg})")
-        return
-    total = len(banco.buscar(banco.TREINAMENTO, sessao_id=sessao["id"]))
-    guardar_msg(MSG_QR, "success", f"Lista “{sessao['treinamento']}” encerrada com {total} participante"
-                                   f"{'' if total == 1 else 's'}. Eles já aparecem em Registros.")
-    st.session_state.pop("tr_qr_sessao", None)
-    st.rerun()
+        guardar_msg(MSG_NOVA, "success", "Ação cadastrada.")
+        st.session_state["pa_versao"] += 1
+        st.rerun()
 
 
 # ---------------------------------------------------------------------
-# Registros: consulta, edição e exclusão
+# Acompanhamento: indicadores, consulta, edição e exclusão
 # ---------------------------------------------------------------------
 
-def registros(df: pd.DataFrame) -> None:
+def acompanhamento(df: pd.DataFrame, acidentes: dict) -> None:
     render_msg(MSG_REG)
     if df.empty:
-        st.info("Nenhum treinamento lançado ainda.")
+        st.info("Nenhuma ação cadastrada ainda.")
         return
+    df = enriquecer(df)
 
-    hoje = date.today()
-    df = df.copy()
-    df["situacao"] = df["data_validade"].map(lambda d: situacao_validade(d, hoje))
-
-    f1, f2, f3, f4, f5 = st.columns([1.3, 1.6, 1, 0.9, 0.9])
+    f1, f2, f3, f4, f5 = st.columns(5)
     with f1:
-        filiais = st.multiselect("FILIAL", opcoes_existentes(df, "filial"), key="tr_f_filial")
-    # o filtro de treinamento só oferece o que as filiais escolhidas realizaram
-    da_filial = df[df["filial"].isin(filiais)] if filiais else df
-    opcoes_trein = opcoes_existentes(da_filial, "treinamento")
-    # tira da seleção o treinamento que deixou de existir ao trocar de filial
-    st.session_state["tr_f_trein"] = [t for t in st.session_state.get("tr_f_trein", []) if t in opcoes_trein]
+        filiais = st.multiselect("FILIAL", opcoes_existentes(df, "filial"), key="pa_f_filial")
     with f2:
-        treinos = st.multiselect("TREINAMENTO", opcoes_trein, key="tr_f_trein")
+        areas = st.multiselect("ÁREA", opcoes_existentes(df, "area"), key="pa_f_area")
     with f3:
-        vinculos = st.multiselect("VÍNCULO", VINCULOS, key="tr_f_vinculo")
+        responsaveis = st.multiselect("RESPONSÁVEL", opcoes_existentes(df, "responsavel"), key="pa_f_resp")
     with f4:
-        de = st.date_input("DE", value=None, format="DD/MM/YYYY", key="tr_f_de")
+        situacoes = st.multiselect("SITUAÇÃO", opcoes_existentes(df, "situacao"), key="pa_f_sit")
     with f5:
-        ate = st.date_input("ATÉ", value=None, format="DD/MM/YYYY", key="tr_f_ate")
-    f6, f7 = st.columns([1.3, 4.4])
-    with f6:
-        instrutores = st.multiselect("INSTRUTOR", opcoes_existentes(df, "instrutor"), key="tr_f_instrutor")
-    with f7:
-        busca = st.text_input("BUSCAR NOME OU CPF", key="tr_f_busca")
+        criticidades = st.multiselect("CRITICIDADE", CRITICIDADES, key="pa_f_crit")
 
     f = df
     if filiais:
         f = f[f["filial"].isin(filiais)]
-    if treinos:
-        f = f[f["treinamento"].isin(treinos)]
-    if vinculos:
-        f = f[f["vinculo"].isin(vinculos)]
-    if instrutores:
-        f = f[f["instrutor"].isin(instrutores)]
-    if de:
-        f = f[f["data_treinamento"] >= de]
-    if ate:
-        f = f[f["data_treinamento"] <= ate]
-    if texto(busca):
-        termo, digitos = texto(busca).lower(), so_digitos(busca)
-        achou = f["nome"].str.lower().str.contains(termo, regex=False, na=False)
-        if digitos:
-            achou |= f["cpf"].astype(str).str.contains(digitos, regex=False, na=False)
-        f = f[achou]
+    if areas:
+        f = f[f["area"].isin(areas)]
+    if responsaveis:
+        f = f[f["responsavel"].isin(responsaveis)]
+    if situacoes:
+        f = f[f["situacao"].isin(situacoes)]
+    if criticidades:
+        f = f[f["criticidade"].isin(criticidades)]
 
-    avaliadas = f["avaliacao"].dropna()
-    contagem = avaliadas.value_counts()
-    satisfeitos = int(contagem.get("Satisfeito", 0))
-    vencidos = int((f["situacao"] == "Vencido").sum())
-    vence_7 = int((f["situacao"] == "Vence em 7 dias").sum())
-    vencendo = int((f["situacao"] == "Vence em 30 dias").sum())
+    abertas = int((f["status"] == "Em andamento").sum())
+    vencidas = int((f["situacao"] == "Vencida").sum())
+    criticas_vencidas = int(f["critica_vencida"].sum())
+    concluidas = f[f["status"] == "Finalizado"]
+    no_prazo = int((concluidas["situacao"] == "Concluída no prazo").sum())
+    pct_no_prazo = f"{no_prazo / len(concluidas):.0%}" if len(concluidas) else VAZIO
+    tempos = concluidas["dias_para_concluir"].dropna()
+    tempo_medio = f"{tempos.mean():.0f} dias" if len(tempos) else VAZIO
+
     linha_cartoes([
-        ("Participações", f"{len(f)}", "neutro", "linhas no filtro"),
-        ("Pessoas treinadas", f"{f['cpf'].nunique()}", "verde", "CPFs distintos"),
-        ("Treinamentos", f"{f['treinamento'].nunique()}", "neutro", "tipos distintos"),
-        ("Satisfeitos", f"{satisfeitos / len(avaliadas):.0%}" if len(avaliadas) else VAZIO, "verde",
-         " · ".join(f"{int(contagem.get(a, 0))} {a}" for a in AVALIACOES) if len(avaliadas)
-         else "sem avaliações"),
-        ("Vencem em 30 dias", f"{vencendo}", "laranja" if vencendo else "neutro", "de 7 a 29 dias"),
-        ("Vencem em 7 dias", f"{vence_7}", "vermelho" if vence_7 else "neutro", "atenção imediata"),
-        ("Vencidos", f"{vencidos}", "vermelho" if vencidos else "neutro", ""),
+        ("Ações abertas", f"{abertas}", "neutro", f"de {len(f)} no filtro"),
+        ("Vencidas", f"{vencidas}", "vermelho" if vencidas else "neutro", "abertas fora do prazo"),
+        ("Críticas vencidas", f"{criticas_vencidas}", "vermelho" if criticas_vencidas else "neutro", ""),
+        ("Concluídas no prazo", pct_no_prazo, "verde", f"{no_prazo} de {len(concluidas)} concluídas"),
+        ("Tempo médio", tempo_medio, "neutro", "abertura → conclusão"),
     ])
     st.write("")
 
     tabela = f[[
-        "id", "data_treinamento", "treinamento", "instrutor", "filial", "nome", "cpf", "funcao",
-        "setor", "vinculo", "avaliacao", "data_validade", "situacao", "link_assinatura",
+        "id", "situacao", "criticidade", "filial", "area", "plano_acao", "responsavel",
+        "data_abertura", "prazo_final", "data_conclusao", "dias_atraso", "status",
+        "eficaz", "houve_reincidencia", "acidente_id",
     ]].copy()
-    tabela["cpf"] = tabela["cpf"].map(fmt_cpf)
-    tabela["link_assinatura"] = tabela["link_assinatura"].map(lambda l: texto(l).rsplit("/", 1)[-1] if texto(l) else "")
-    # hora em que a pessoa se registrou pelo QR (turnos diferentes no mesmo QR); lista lançada fica em branco
-    tabela["registro_qr"] = [data_hora_local(c) if pd.notna(sid) else ""
-                             for c, sid in zip(f["criado_em"], f["sessao_id"])]
-    textos = ["treinamento", "instrutor", "filial", "nome", "funcao", "setor", "vinculo", "avaliacao"]
+    textos = ["criticidade", "filial", "area", "plano_acao", "responsavel"]
     tabela[textos] = tabela[textos].fillna("")  # vazio em vez de "None" na tela
 
-    versao_tabela = st.session_state.setdefault("tr_tabela_v", 0)
+    versao_tabela = st.session_state.setdefault("pa_tabela_v", 0)
     colunas = {
         "id": st.column_config.NumberColumn("ID", format="%d", width="small"),
-        "data_treinamento": st.column_config.DateColumn("DATA", format="DD/MM/YYYY"),
-        "treinamento": "TREINAMENTO",
-        "instrutor": "INSTRUTOR",
-        "filial": "FILIAL",
-        "nome": "NOME",
-        "cpf": "CPF",
-        "funcao": "FUNÇÃO",
-        "setor": "SETOR",
-        "vinculo": "VÍNCULO",
-        "avaliacao": "AVALIAÇÃO",
-        "data_validade": st.column_config.DateColumn("VALIDADE", format="DD/MM/YYYY"),
         "situacao": "SITUAÇÃO",
-        "link_assinatura": "ASSINATURA (arquivo no MinIO)",
-        "registro_qr": "REGISTRO NO QR",
+        "criticidade": "CRITICIDADE",
+        "filial": "FILIAL",
+        "area": "ÁREA",
+        "plano_acao": st.column_config.TextColumn("PLANO DE AÇÃO", width="large"),
+        "responsavel": "RESPONSÁVEL",
+        "data_abertura": st.column_config.DateColumn("ABERTURA", format="DD/MM/YYYY"),
+        "prazo_final": st.column_config.DateColumn("PRAZO", format="DD/MM/YYYY"),
+        "data_conclusao": st.column_config.DateColumn("CONCLUSÃO", format="DD/MM/YYYY"),
+        "dias_atraso": st.column_config.NumberColumn("DIAS DE ATRASO", format="%d"),
+        "status": "STATUS",
+        "eficaz": st.column_config.CheckboxColumn("EFICAZ"),
+        "houve_reincidencia": st.column_config.CheckboxColumn("REINCIDÊNCIA"),
+        "acidente_id": st.column_config.NumberColumn("ACIDENTE", format="%d"),
     }
     evento = st.dataframe(
         tabela,
-        key=f"tr_tabela_{versao_tabela}",
+        key=f"pa_tabela_{versao_tabela}",
         on_select="rerun",
         selection_mode="single-row",
         hide_index=True,
         width="stretch",
         column_config=colunas,
     )
-    baixar_excel(tabela, colunas, "treinamentos", "tr_xlsx", "Treinamentos")
-    lista_pdf(f)
+    baixar_excel(tabela, colunas, "plano_de_acao", "pa_xlsx", "Plano de ação")
 
     linhas = evento.selection.rows
     if not linhas:
-        st.caption("Selecione uma linha na tabela para editar ou excluir.")
+        st.caption("Selecione uma linha na tabela para editar, concluir ou excluir.")
         return
-    registro = f.iloc[linhas[0]]
     st.divider()
-    editar(registro, df)
+    editar(f.iloc[linhas[0]], df, acidentes)
 
 
-CHAVE_LISTA = ["treinamento", "data_treinamento", "filial", "instrutor_chave", "lista_chave"]
-
-
-def chaves_de_lista(f: pd.DataFrame) -> pd.DataFrame:
-    """Marca a qual lista cada linha pertence.
-
-    Mesmo treinamento, dia e filial pode ter turmas diferentes (outro
-    instrutor, manhã e tarde). Uma lista é: o QR Code que a gerou
-    (sessao_id) ou, se foi lançada à mão / por Excel, o momento do "Salvar"
-    — todas as linhas de um mesmo Salvar são gravadas com o mesmo criado_em.
-    """
-    lista = f["sessao_id"].map(lambda s: f"qr-{int(s)}" if pd.notna(s) else None)
-    return f.assign(
-        instrutor_chave=f["instrutor"].map(lambda i: texto(i) or ""),
-        lista_chave=lista.fillna(f["criado_em"].astype(str)),
-    )
-
-
-def data_hora_local(criado_em) -> str:
-    """'2026-10-06T14:32:10+00:00' -> '06/10 11:32' (hora de Brasília)."""
-    try:
-        return pd.to_datetime(criado_em, utc=True).tz_convert("America/Sao_Paulo").strftime("%d/%m %H:%M")
-    except Exception:
-        return ""
-
-
-def hora_local(criado_em) -> str:
-    try:
-        return pd.to_datetime(criado_em, utc=True).tz_convert("America/Sao_Paulo").strftime("%H:%M")
-    except Exception:
-        return ""
-
-
-def lista_pdf(f: pd.DataFrame) -> None:
-    """Escolhe uma lista (treinamento + data + filial + instrutor + turma) e gera o PDF com as assinaturas."""
-    titulo_secao("📄 Lista de presença em PDF",
-                 "Escolha o treinamento e baixe a lista com nome, CPF, função, setor, avaliação e assinatura.")
-    base = chaves_de_lista(f)
-    grupos = (base.groupby(CHAVE_LISTA).agg(total=("id", "size"), criado=("criado_em", "min"))
-              .reset_index().sort_values(["data_treinamento", "criado"], ascending=False))
-    if grupos.empty:
-        st.caption("Nenhuma lista no filtro.")
-        return
-
-    def rotulo_de(g) -> str:
-        return (f"{g.treinamento} · {fmt_data(g.data_treinamento)} · {g.filial} · "
-                f"instrutor: {g.instrutor_chave or 'não informado'} "
-                f"({g.total} participante{'' if g.total == 1 else 's'})")
-
-    rotulos = [rotulo_de(g) for g in grupos.itertuples(index=False)]
-    por_rotulo = {}
-    for rotulo, g in zip(rotulos, grupos.itertuples(index=False)):
-        if rotulos.count(rotulo) > 1:  # turmas iguais em tudo: separa pela hora em que a lista foi salva
-            origem = "QR Code" if g.lista_chave.startswith("qr-") else "lançada"
-            rotulo = f"{rotulo} · {origem} às {hora_local(g.criado)}"
-        unico, n = rotulo, 2
-        while unico in por_rotulo:  # salvas no mesmo minuto: numera a turma
-            unico, n = f"{rotulo} (turma {n})", n + 1
-        por_rotulo[unico] = g
-    if st.session_state.get("tr_pdf_lista") not in por_rotulo:  # o filtro mudou e a lista sumiu
-        st.session_state.pop("tr_pdf_lista", None)
-    c1, c2 = st.columns([4, 1])
-    with c1:
-        rotulo = st.selectbox("LISTA", list(por_rotulo), key="tr_pdf_lista")
-    with c2:
-        st.write("")
-        gerar = st.button("📄 Gerar PDF", key="tr_pdf_gerar")
-
-    if gerar:
-        g = por_rotulo[rotulo]
-        mesma_lista = True
-        for coluna in CHAVE_LISTA:
-            mesma_lista &= base[coluna] == getattr(g, coluna)
-        linhas = base[mesma_lista].sort_values("nome")
-        try:
-            import relatorio_pdf
-            with st.spinner("Montando o PDF e buscando as assinaturas..."):
-                assinaturas, faltando = {}, 0
-                for _, p in linhas.iterrows():
-                    if texto(p["link_assinatura"]):
-                        try:
-                            assinaturas[p["id"]] = evidencia.baixar(p["link_assinatura"])
-                        except Exception:
-                            faltando += 1
-                ass_instrutor = None
-                link_instrutor = next((l for l in linhas["link_assinatura_instrutor"] if texto(l)), None)
-                if link_instrutor:
-                    try:
-                        ass_instrutor = evidencia.baixar(link_instrutor)
-                    except Exception:
-                        faltando += 1
-                usuario = st.session_state.get("usuario", {}).get("email", "")
-                pdf = relatorio_pdf.lista_presenca(linhas, assinaturas, usuario, ass_instrutor)
-        except Exception as erro:
-            st.error(f"Não foi possível gerar o PDF: {erro}")
-            return
-        partes = [g.treinamento, g.filial] + ([g.instrutor_chave] if g.instrutor_chave else [])
-        nome = evidencia.nome_legivel(*partes) + f"-{fmt_data(g.data_treinamento).replace('/', '-')}.pdf"
-        st.session_state["tr_pdf"] = (rotulo, nome, pdf, faltando)
-
-    g = por_rotulo[rotulo]
-    mesma = True
-    for coluna in CHAVE_LISTA:
-        mesma &= base[coluna] == getattr(g, coluna)
-    fisica = next((l for l in base.loc[mesma, "link_evidencia"] if texto(l)), None)
-    if fisica:
-        evidencia.mostrar(fisica, "📎 Abrir lista física (RQ 10 assinada)")
-
-    pronto = st.session_state.get("tr_pdf")
-    if pronto and pronto[0] == rotulo:
-        _, nome, pdf, faltando = pronto
-        if faltando:
-            st.warning(f"{faltando} assinatura(s) não foram encontradas no MinIO e saíram em branco.")
-        st.download_button("⬇️ Baixar PDF", pdf, file_name=nome, mime="application/pdf",
-                           type="primary", key="tr_pdf_baixar")
-
-
-def editar(reg: pd.Series, df: pd.DataFrame) -> None:
+def editar(reg: pd.Series, df: pd.DataFrame, acidentes: dict) -> None:
     rid = int(reg["id"])
-    k = f"tr_ed_{rid}_{st.session_state['tr_tabela_v']}"
-    titulo_secao(f"Editar registro #{rid}")
+    k = f"pa_ed_{rid}_{st.session_state['pa_tabela_v']}"
+    titulo_secao(f"Editar ação #{rid}", f"Situação atual: {reg['situacao']}")
+    dados = campos_acao(df, acidentes, k, reg.to_dict())
 
-    c1, c2, c3 = st.columns([2, 1, 1])
-    with c1:
-        nome = st.text_input("NOME", value=texto(reg["nome"]) or "", key=f"{k}_nome")
-    with c2:
-        cpf = st.text_input("CPF", value=fmt_cpf(reg["cpf"]), key=f"{k}_cpf")
-    with c3:
-        data_tr = st.date_input(
-            "DATA DO TREINAMENTO", value=reg["data_treinamento"], format="DD/MM/YYYY", key=f"{k}_data"
-        )
-
-    c4, c5, c6 = st.columns([2, 1.5, 1.5])
-    with c4:
-        treinamento = campo_com_outro(
-            "TREINAMENTO", opcoes_existentes(df, "treinamento"), f"{k}_trein", reg["treinamento"]
-        )
-    with c5:
-        instrutor = campo_instrutor(df, f"{k}_instrutor", reg["instrutor"])
-    with c6:
-        cod_filial, filial = acesso.campo_filial("FILIAL", f"{k}_filial", reg["cod_filial"])
-
-    c7, c8, c11, c9, c10 = st.columns(5)
-    with c11:
-        vinculo = campo_lista("VÍNCULO", VINCULOS, f"{k}_vinculo", reg["vinculo"])
-    with c7:
-        funcao = campo_com_outro("FUNÇÃO", opcoes_funcao(df), f"{k}_funcao", reg["funcao"])
-    with c8:
-        setor = campo_com_outro("SETOR", opcoes_existentes(df, "setor"), f"{k}_setor", reg["setor"])
-    with c9:
-        avaliacao = campo_lista("AVALIAÇÃO", AVALIACOES, f"{k}_aval", reg["avaliacao"])
-    with c10:
-        validade = st.date_input(
-            "VALIDADE", value=reg["data_validade"], format="DD/MM/YYYY", key=f"{k}_validade"
-        )
-    if texto(reg["link_assinatura"]):
-        evidencia.mostrar(reg["link_assinatura"], "✍️ Ver assinatura")
-    if texto(reg["link_assinatura_instrutor"]):
-        evidencia.mostrar(reg["link_assinatura_instrutor"], "✍️ Ver assinatura do instrutor")
-    link_atual = texto(reg["link_evidencia"])
-    if link_atual:
-        evidencia.mostrar(link_atual)
-    arquivo = evidencia.campo(
-        "SUBSTITUIR EVIDÊNCIA (só deste participante)" if link_atual else "ANEXAR RQ 10 ASSINADA",
-        f"{k}_arquivo",
-    )
-
-    confirmar = st.checkbox("Quero excluir este registro", key=f"{k}_confirma")
+    confirmar = st.checkbox("Quero excluir esta ação", key=f"{k}_confirma")
     b1, b2, _ = st.columns([1.4, 1, 4])
     salvar = b1.button("💾 Salvar alterações", type="primary", key=f"{k}_salvar")
     apagar = b2.button("🗑️ Excluir", key=f"{k}_excluir", disabled=not confirmar)
 
     if salvar:
-        cpf_limpo = so_digitos(cpf)
-        erros = []
-        if not texto(nome):
-            erros.append("Nome em branco.")
-        if erro_cpf(cpf_limpo):
-            erros.append(erro_cpf(cpf_limpo))
-        if not treinamento:
-            erros.append("Informe o treinamento.")
-        if not filial:
-            erros.append("Informe a filial.")
-        if not data_tr:
-            erros.append("Informe a data do treinamento.")
-        if validade and data_tr and validade < data_tr:
-            erros.append("A validade não pode ser anterior à data do treinamento.")
+        erros = validar(dados)
         if erros:
             mostrar_erros(erros)
             return
-        dados = {
-            "nome": texto(nome), "cpf": cpf_limpo, "data_treinamento": data_tr,
-            "filial": filial, "cod_filial": cod_filial, "funcao": texto(funcao), "setor": texto(setor),
-            "treinamento": treinamento, "instrutor": instrutor, "vinculo": vinculo, "data_validade": validade,
-            "avaliacao": avaliacao, "link_evidencia": link_atual,
-        }
-        concluir(evidencia.gravar(arquivo, "treinamento", lambda caminho: banco.atualizar(
-            banco.TREINAMENTO, rid, {**dados, "link_evidencia": caminho or dados["link_evidencia"]})))
-
+        arquivo = dados.pop("_arquivo")
+        concluir(evidencia.gravar(arquivo, "plano_acao", lambda caminho: banco.atualizar(
+            banco.PLANO_ACAO, rid, {**dados, "link_evidencia": caminho or dados["link_evidencia"]})))
     if apagar:
-        concluir(banco.excluir(banco.TREINAMENTO, rid))
+        concluir(banco.excluir(banco.PLANO_ACAO, rid))
 
 
 def concluir(resultado: tuple) -> None:
@@ -1072,5 +409,5 @@ def concluir(resultado: tuple) -> None:
         st.error(msg)
         return
     guardar_msg(MSG_REG, "success", msg)
-    st.session_state["tr_tabela_v"] += 1  # limpa a seleção da tabela
+    st.session_state["pa_tabela_v"] += 1  # limpa a seleção da tabela
     st.rerun()
