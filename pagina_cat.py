@@ -20,7 +20,7 @@ import acesso
 import banco
 import evidencia
 from comum import (
-    FUNCOES_RQ05, garantir_colunas, campo_com_outro, campo_lista, campo_sim_nao, csv_excel, erro_cpf,
+    FUNCOES_RQ05, garantir_colunas, campo_com_outro, campo_lista, campo_sim_nao, baixar_excel, erro_cpf,
     fmt_cpf, guardar_msg, mostrar_erros, opcoes_existentes, para_data, para_hora, render_msg,
     so_digitos, texto, vazio,
 )
@@ -349,6 +349,23 @@ def registros(df: pd.DataFrame) -> None:
     tabela[textos] = tabela[textos].fillna("")
 
     versao_tabela = st.session_state.setdefault("cat_tabela_v", 0)
+    colunas = {
+        "id": st.column_config.NumberColumn("ID", format="%d", width="small"),
+        "data_acidente": st.column_config.DateColumn("DATA", format="DD/MM/YYYY"),
+        "numero_cat": "Nº CAT",
+        "nome": "COLABORADOR",
+        "cpf": "CPF",
+        "publico": "PÚBLICO",
+        "filial": "FILIAL",
+        "setor": "SETOR",
+        "cargo": "CARGO",
+        "tipo_acidente": "TIPO",
+        "agente_causador": "AGENTE CAUSADOR",
+        "parte_corpo": "PARTE DO CORPO",
+        "afastamento": "AFASTAMENTO",
+        "dias_afastamento": st.column_config.NumberColumn("DIAS", format="%d"),
+        "cid": "CID",
+    }
     evento = st.dataframe(
         tabela,
         key=f"cat_tabela_{versao_tabela}",
@@ -356,26 +373,9 @@ def registros(df: pd.DataFrame) -> None:
         selection_mode="single-row",
         hide_index=True,
         width="stretch",
-        column_config={
-            "id": st.column_config.NumberColumn("ID", format="%d", width="small"),
-            "data_acidente": st.column_config.DateColumn("DATA", format="DD/MM/YYYY"),
-            "numero_cat": "Nº CAT",
-            "nome": "COLABORADOR",
-            "cpf": "CPF",
-            "publico": "PÚBLICO",
-            "filial": "FILIAL",
-            "setor": "SETOR",
-            "cargo": "CARGO",
-            "tipo_acidente": "TIPO",
-            "agente_causador": "AGENTE CAUSADOR",
-            "parte_corpo": "PARTE DO CORPO",
-            "afastamento": "AFASTAMENTO",
-            "dias_afastamento": st.column_config.NumberColumn("DIAS", format="%d"),
-            "cid": "CID",
-        },
+        column_config=colunas,
     )
-    st.download_button("⬇️ Baixar CSV", csv_excel(tabela), file_name="cat_acidentes_internos.csv",
-                       mime="text/csv", key="cat_csv")
+    baixar_excel(tabela, colunas, "cat_acidentes_internos", "cat_xlsx", "CAT")
 
     linhas = evento.selection.rows
     if not linhas:
