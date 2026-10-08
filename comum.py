@@ -194,6 +194,69 @@ def campo_lista(rotulo: str, opcoes: list, key: str, valor_atual=None):
     return None if escolha == VAZIO else escolha
 
 
-def csv_excel(df: pd.DataFrame) -> bytes:
-    """CSV que o Excel em pt-BR abre certo (ponto e vírgula + BOM)."""
-    return df.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
+# ---------------------------------------------------------------------
+# Extração em Excel
+# ---------------------------------------------------------------------
+
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def planilha_excel(df: pd.DataFrame, colunas: dict, aba: str = "Dados") -> bytes:
+    """A tabela da tela em .xlsx: mesmos títulos de coluna (o column_config do
+    st.dataframe), data como data, Sim/Não no lugar de True/False, cabeçalho
+    fixo e filtro em cada coluna."""
+    from io import BytesIO
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    def rotulo(coluna):
+        c = colunas.get(coluna, coluna)
+        return c if isinstance(c, str) else (c.get("label") or coluna)
+
+    def celula(v):
+        if v is None or (not isinstance(v, (list, dict)) and pd.isna(v)):
+            return None
+        if isinstance(v, pd.Timestamp):
+            return v.to_pydatetime().date() if v == v.normalize() else v.to_pydatetime()
+        if hasattr(v, "item"):  # numpy → tipo do Python
+            v = v.item()
+        if isinstance(v, bool):
+            return "Sim" if v else "Não"
+        if isinstance(v, time):
+            return v.strftime("%H:%M")
+        return v
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = aba[:31]
+    ws.append([rotulo(c) for c in df.columns])
+    for linha in df.itertuples(index=False):
+        ws.append([celula(v) for v in linha])
+
+    for cel in ws[1]:
+        cel.font = Font(bold=True, color="FFFFFF")
+        cel.fill = PatternFill("solid", fgColor="E4610A")
+        cel.alignment = Alignment(vertical="center")
+    for i, coluna in enumerate(df.columns, start=1):
+        letra = get_column_letter(i)
+        maior = max([len(str(ws.cell(1, i).value))] + [len(str(v)) for v in df[coluna].head(500) if not vazio(v)])
+        ws.column_dimensions[letra].width = min(max(maior + 2, 10), 60)
+        for (cel,) in ws.iter_rows(min_row=2, min_col=i, max_col=i):
+            if isinstance(cel.value, datetime):
+                cel.number_format = "DD/MM/YYYY HH:MM"
+            elif isinstance(cel.value, date):
+                cel.number_format = "DD/MM/YYYY"
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+    saida = BytesIO()
+    wb.save(saida)
+    return saida.getvalue()
+
+
+def baixar_excel(df: pd.DataFrame, colunas: dict, arquivo: str, key: str, aba: str = "Dados") -> None:
+    """Botão "Baixar Excel" com a tabela filtrada da tela. `arquivo` sem extensão."""
+    st.download_button("⬇️ Baixar Excel", planilha_excel(df, colunas, aba), file_name=f"{arquivo}.xlsx",
+                       mime=XLSX, key=key)
