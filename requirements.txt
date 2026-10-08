@@ -1,13 +1,13 @@
 streamlit
 pandas
 supabase
-minio==7.1.2
+minio==7.2.20
 pyarrow
 python-dotenv
 requests-oauthlib
 office365-rest-python-client
 openpyxl
 git+https://github.com/DellaVolpe69/Modulos.git@main
-qrcode>=7.4
+qrcode>=8.2
 streamlit-drawable-canvas==0.13.0
-fpdf2>=2.7
+fpdf2>=2.8.9
