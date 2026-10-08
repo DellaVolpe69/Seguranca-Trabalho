@@ -14,7 +14,7 @@ import acesso
 import banco
 import evidencia
 from comum import (
-    garantir_colunas, VAZIO, campo_com_outro, campo_lista, campo_sim_nao, csv_excel, fmt_data,
+    garantir_colunas, VAZIO, campo_com_outro, campo_lista, campo_sim_nao, baixar_excel, fmt_data,
     guardar_msg, mostrar_erros, opcoes_existentes, para_data, render_msg, texto,
 )
 from estilo import (
@@ -344,6 +344,23 @@ def acompanhamento(df: pd.DataFrame, acidentes: dict) -> None:
     tabela[textos] = tabela[textos].fillna("")  # vazio em vez de "None" na tela
 
     versao_tabela = st.session_state.setdefault("pa_tabela_v", 0)
+    colunas = {
+        "id": st.column_config.NumberColumn("ID", format="%d", width="small"),
+        "situacao": "SITUAÇÃO",
+        "criticidade": "CRITICIDADE",
+        "filial": "FILIAL",
+        "area": "ÁREA",
+        "plano_acao": st.column_config.TextColumn("PLANO DE AÇÃO", width="large"),
+        "responsavel": "RESPONSÁVEL",
+        "data_abertura": st.column_config.DateColumn("ABERTURA", format="DD/MM/YYYY"),
+        "prazo_final": st.column_config.DateColumn("PRAZO", format="DD/MM/YYYY"),
+        "data_conclusao": st.column_config.DateColumn("CONCLUSÃO", format="DD/MM/YYYY"),
+        "dias_atraso": st.column_config.NumberColumn("DIAS DE ATRASO", format="%d"),
+        "status": "STATUS",
+        "eficaz": st.column_config.CheckboxColumn("EFICAZ"),
+        "houve_reincidencia": st.column_config.CheckboxColumn("REINCIDÊNCIA"),
+        "acidente_id": st.column_config.NumberColumn("ACIDENTE", format="%d"),
+    }
     evento = st.dataframe(
         tabela,
         key=f"pa_tabela_{versao_tabela}",
@@ -351,28 +368,9 @@ def acompanhamento(df: pd.DataFrame, acidentes: dict) -> None:
         selection_mode="single-row",
         hide_index=True,
         width="stretch",
-        column_config={
-            "id": st.column_config.NumberColumn("ID", format="%d", width="small"),
-            "situacao": "SITUAÇÃO",
-            "criticidade": "CRITICIDADE",
-            "filial": "FILIAL",
-            "area": "ÁREA",
-            "plano_acao": st.column_config.TextColumn("PLANO DE AÇÃO", width="large"),
-            "responsavel": "RESPONSÁVEL",
-            "data_abertura": st.column_config.DateColumn("ABERTURA", format="DD/MM/YYYY"),
-            "prazo_final": st.column_config.DateColumn("PRAZO", format="DD/MM/YYYY"),
-            "data_conclusao": st.column_config.DateColumn("CONCLUSÃO", format="DD/MM/YYYY"),
-            "dias_atraso": st.column_config.NumberColumn("DIAS DE ATRASO", format="%d"),
-            "status": "STATUS",
-            "eficaz": st.column_config.CheckboxColumn("EFICAZ"),
-            "houve_reincidencia": st.column_config.CheckboxColumn("REINCIDÊNCIA"),
-            "acidente_id": st.column_config.NumberColumn("ACIDENTE", format="%d"),
-        },
+        column_config=colunas,
     )
-    st.download_button(
-        "⬇️ Baixar CSV", csv_excel(tabela), file_name="plano_de_acao.csv",
-        mime="text/csv", key="pa_csv",
-    )
+    baixar_excel(tabela, colunas, "plano_de_acao", "pa_xlsx", "Plano de ação")
 
     linhas = evento.selection.rows
     if not linhas:
