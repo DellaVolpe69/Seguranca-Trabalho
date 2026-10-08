@@ -11,8 +11,13 @@ ano, quando acontecem (dia da semana, semana do mês), pessoas por turma,
 vencimentos e filiais sem treinamento. As cargas históricas de 2024/2025
 foram gravadas no dia 1º do mês (a planilha só tinha o mês): entram nos
 números por mês/ano, mas não no que depende do dia.
+
+Acidentes × Viagens: acidentes do Relatório de Acidente (segtrabalho_acidente)
+por 1.000 viagens. As viagens vêm de um parquet que o B.I gera no HANA e sobe
+no MinIO (ARQUIVO_VIAGENS): uma linha por mês × filial × motorista.
 """
 
+import io
 from datetime import date
 
 import altair as alt
@@ -20,14 +25,17 @@ import pandas as pd
 import streamlit as st
 
 import acesso
+import evidencia
+import pagina_acidente
 import pagina_cat
 import pagina_treinamento
-from comum import baixar_excel, texto
+from comum import baixar_excel, so_digitos, texto
 from estilo import barra_paginas_lateral, bloco_usuario_lateral, cabecalho_tela, linha_cartoes, titulo_secao
 
 PAGINAS = {
     "acidentes_internos": "Acidentes Internos",
     "treinamentos": "Treinamentos",
+    "acidentes_viagens": "Acidentes × Viagens",
 }
 MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 MESES_NOME = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto",
@@ -40,6 +48,12 @@ DIAS_SEMANA = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Dom
 SEMANAS_MES = ["1ª (dias 1–7)", "2ª (8–14)", "3ª (15–21)", "4ª (22–28)", "5ª (29–31)"]
 VINCULOS = pagina_treinamento.VINCULOS + ["Não informado"]
 CORES_VINCULO = ["#E4610A", "#8C1D18", "#F7A46B", "#5A4E46", "#D9CBBF"]
+# parquet que a rotina do B.I gera no HANA e substitui no MinIO
+BUCKET_VIAGENS, ARQUIVO_VIAGENS = "calculation-view", "dados_tratados/ViagensPorMotorista.parquet"
+TIPOS_MOTORISTA = pagina_acidente.TIPOS_MOTORISTA  # Frota, Agregado, Terceiro
+TIPO_VIAGEM = {"Frota": "Frota", "Agregado": "Agregado", "Terceiros/Dedicado": "Terceiro"}  # BP → app
+CORES_TIPO = ["#8C1D18", "#E4610A", "#F7A46B"]
+POR_MIL = 1000
 
 
 def tela(usuario: dict) -> None:
@@ -49,6 +63,8 @@ def tela(usuario: dict) -> None:
     bloco_usuario_lateral(usuario)
     if pagina == "treinamentos":
         treinamentos()
+    elif pagina == "acidentes_viagens":
+        acidentes_viagens()
     else:
         acidentes_internos()
 
@@ -632,3 +648,255 @@ def relatorio_treinamentos(f: pd.DataFrame) -> None:
     }
     st.dataframe(tabela, hide_index=True, width="stretch", column_config=colunas)
     baixar_excel(tabela, colunas, "indicador_treinamentos", "ind_tr_xlsx", "Treinamentos")
+
+
+# ---------------------------------------------------------------------
+# Acidentes × Viagens
+# ---------------------------------------------------------------------
+# Viagens: parquet gerado no HANA (vale-frete emitido → OF → placa → motorista
+# do veículo → BP), uma linha por mês × filial × motorista. Fica no MinIO e é
+# substituído pela rotina do B.I. Acidentes: Relatório de Acidente.
+
+def _rotulo_mes(p: pd.Period) -> str:
+    return f"{MESES[p.month - 1]}/{str(p.year)[2:]}"
+
+
+@st.cache_data(ttl=3600, show_spinner="Lendo a base de viagens…")
+def _viagens_minio() -> pd.DataFrame:
+    df = pd.read_parquet(io.BytesIO(evidencia.baixar(ARQUIVO_VIAGENS, BUCKET_VIAGENS)))
+    df.columns = [c.upper() for c in df.columns]
+    return pd.DataFrame({
+        "periodo": [pd.Period(year=int(a), month=int(m), freq="M") for a, m in zip(df["ANO"], df["MES"])],
+        "cod_filial": df["COD_FILIAL"].astype(str).str.strip().str.zfill(4),
+        "tipo": df["TIPO_PARCEIRO"].map(lambda t: TIPO_VIAGEM.get(texto(t), texto(t))),
+        "cod_parceiro": df["COD_PARCEIRO"].astype(str),
+        "nome": df["NOME_PARCEIRO"],
+        "cpf": df["CPF_CNPJ"].map(so_digitos),
+        "viagens": df["QTD_VIAGENS"].astype(int),
+    })
+
+
+def carregar_viagens():
+    """Base de viagens recortada pelas filiais do usuário; None se não deu para ler."""
+    try:
+        df = _viagens_minio()
+    except Exception as erro:
+        st.warning(f"Não foi possível ler a base de viagens (`{BUCKET_VIAGENS}/{ARQUIVO_VIAGENS}` no MinIO): {erro}")
+        return None
+    if not acesso.perfil()["admin"]:
+        df = df[df["cod_filial"].isin(acesso.perfil()["codigos"])]
+    return df.assign(filial=df["cod_filial"].map(lambda c: acesso.FILIAIS.get(c, c)))
+
+
+def taxa(acidentes: float, viagens: float):
+    return acidentes / viagens * POR_MIL if viagens else None
+
+
+def fmt_taxa(valor) -> str:
+    return "—" if valor is None or pd.isna(valor) else f"{valor:.2f}".replace(".", ",")
+
+
+def acidentes_viagens() -> None:
+    st.markdown("### Acidentes × Viagens")
+    viagens = carregar_viagens()
+    if viagens is None:
+        return
+    if viagens.empty:
+        st.info("Nenhuma viagem na base para as suas filiais.")
+        return
+    acid = pagina_acidente.carregar()
+    acid = acid[acid["data_evento"].notna()].copy()
+    acid["periodo"] = acid["data_evento"].map(lambda d: pd.Period(d, "M"))
+    acid["cod_filial"] = acid["cod_filial"].map(lambda c: texto(c))
+    acid["filial"] = [acesso.FILIAIS.get(c, texto(f) or "Sem filial") for c, f in zip(acid["cod_filial"], acid["filial_origem"])]
+    acid["tipo"] = acid["tipo_motorista"].map(lambda t: texto(t) or "Não informado")
+    acid["cpf_limpo"] = acid["cpf"].map(so_digitos)
+    # a taxa só vale nos meses que a base de viagens cobre
+    inicio, fim = viagens["periodo"].min(), viagens["periodo"].max()
+    acid = acid[(acid["periodo"] >= inicio) & (acid["periodo"] <= fim)]
+
+    f1, f2, f3, f4, f5 = st.columns([1.2, 1.1, 1.1, 1.1, 1.3])
+    with f1:
+        filiais = st.multiselect("FILIAL", sorted(set(viagens["filial"]) | set(acid["filial"])), key="ind_av_filial")
+    with f2:
+        anos = st.multiselect("ANO", sorted({p.year for p in viagens["periodo"]}, reverse=True), key="ind_av_ano")
+    with f3:
+        meses = st.multiselect("MÊS", list(range(1, 13)), format_func=lambda m: MESES_NOME[m - 1], key="ind_av_mes")
+    with f4:
+        tipos = st.multiselect("TIPO DE MOTORISTA", TIPOS_MOTORISTA, key="ind_av_tipo")
+    with f5:
+        perdas = st.multiselect("TIPO DE PERDA (acidentes)", pagina_acidente.TIPOS_PERDA, key="ind_av_perda")
+
+    def recorta(df):
+        if filiais:
+            df = df[df["filial"].isin(filiais)]
+        if anos:
+            df = df[df["periodo"].map(lambda p: p.year).isin(anos)]
+        if meses:
+            df = df[df["periodo"].map(lambda p: p.month).isin(meses)]
+        if tipos:
+            df = df[df["tipo"].isin(tipos)]
+        return df
+
+    v, a = recorta(viagens), recorta(acid)
+    if perdas:
+        a = a[a["tipo_perda"].isin(perdas)]
+    st.caption(f"Base de viagens: {_rotulo_mes(inicio)} a {_rotulo_mes(fim)} (o último mês pode estar em andamento). "
+               "Viagem = OF com vale-frete emitido.")
+
+    total_v, total_a = int(v["viagens"].sum()), len(a)
+    sem_tipo = int((a["tipo"] == "Não informado").sum())
+    linha_cartoes([
+        ("Acidentes", f"{total_a}", "laranja" if total_a else "verde",
+         f"{sem_tipo} sem tipo de motorista" if sem_tipo else "Relatório de Acidente"),
+        ("Viagens", milhar(total_v), "neutro", f"{milhar(v['cpf'].nunique())} motoristas"),
+        (f"Acidentes por {milhar(POR_MIL)} viagens", fmt_taxa(taxa(total_a, total_v)),
+         "vermelho" if total_a else "verde", "acidentes ÷ viagens × 1.000"),
+        ("Viagens por acidente", milhar(total_v / total_a) if total_a else "—", "neutro",
+         "uma ocorrência a cada N viagens"),
+    ])
+    st.write("")
+    analise, acidentados, relatorio = st.tabs(["📊 Análise", "🧑 Acidentados", "📄 Relatório"])
+    with analise:
+        graficos_viagens(v, a)
+    with acidentados:
+        tabela_acidentados(a, viagens)
+    with relatorio:
+        relatorio_viagens(v, a)
+
+
+def resumo(v: pd.DataFrame, a: pd.DataFrame, chave: list) -> pd.DataFrame:
+    """Viagens, motoristas, acidentes e taxa por `chave`."""
+    vv = v.groupby(chave).agg(viagens=("viagens", "sum"), motoristas=("cpf", "nunique"))
+    aa = a.groupby(chave).size().rename("acidentes")
+    tabela = vv.join(aa, how="outer").fillna(0)
+    tabela[["viagens", "motoristas", "acidentes"]] = tabela[["viagens", "motoristas", "acidentes"]].astype(int)
+    tabela["taxa"] = [taxa(x, y) for x, y in zip(tabela["acidentes"], tabela["viagens"])]
+    return tabela.reset_index()
+
+
+def graficos_viagens(v: pd.DataFrame, a: pd.DataFrame) -> None:
+    mensal = resumo(v, a, ["periodo"]).sort_values("periodo")
+    if mensal.empty:
+        st.info("Nenhuma viagem no filtro.")
+        return
+    meses = pd.period_range(mensal["periodo"].min(), mensal["periodo"].max(), freq="M")
+    mensal = mensal.set_index("periodo").reindex(meses).fillna({"viagens": 0, "acidentes": 0}).reset_index(names="periodo")
+    mensal["mes"] = mensal["periodo"].map(_rotulo_mes)
+
+    por_tipo = v.groupby(["periodo", "tipo"])["viagens"].sum().unstack(fill_value=0) \
+        .reindex(index=meses, columns=TIPOS_MOTORISTA, fill_value=0)
+    por_tipo["mes"] = [_rotulo_mes(p) for p in por_tipo.index]
+    c1, c2 = st.columns(2)
+    with c1:
+        titulo_secao("Viagens por mês", legenda_html(TIPOS_MOTORISTA, CORES_TIPO))
+        st.altair_chart(barras_empilhadas(por_tipo.reset_index(drop=True), TIPOS_MOTORISTA, CORES_TIPO, "Viagens"))
+    with c2:
+        titulo_secao(f"Acidentes por {milhar(POR_MIL)} viagens, por mês",
+                     "A barra é a taxa do mês; passe o mouse para ver acidentes e viagens.")
+        ordem = list(mensal["mes"])
+        grafico = (
+            alt.Chart(mensal.assign(taxa=mensal["taxa"].fillna(0)))
+            .mark_bar(color=COR_INSS, cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
+            .encode(
+                x=alt.X("mes:N", sort=ordem, title=None, axis=alt.Axis(labelAngle=0 if len(ordem) <= 14 else -45)),
+                y=alt.Y("taxa:Q", title=f"Acidentes / {milhar(POR_MIL)} viagens"),
+                tooltip=[alt.Tooltip("mes:N", title="Mês"), alt.Tooltip("taxa:Q", title="Taxa", format=".2f"),
+                         alt.Tooltip("acidentes:Q", title="Acidentes"), alt.Tooltip("viagens:Q", title="Viagens", format=",")],
+            )
+            .properties(height=260)
+        )
+        st.altair_chart(grafico)
+
+    colunas_resumo = {
+        "viagens": st.column_config.NumberColumn("VIAGENS", format="%d"),
+        "motoristas": st.column_config.NumberColumn("MOTORISTAS", format="%d"),
+        "acidentes": st.column_config.NumberColumn("ACIDENTES", format="%d"),
+        "taxa": st.column_config.NumberColumn(f"POR {milhar(POR_MIL)} VIAGENS", format="%.2f"),
+    }
+    titulo_secao("Por tipo de motorista")
+    por_tipo_tab = resumo(v, a, ["tipo"])
+    # média mensal: viagens ÷ (motorista × mês em que ele viajou)
+    motorista_mes = v.groupby("tipo").apply(lambda x: len(x[["cpf", "periodo"]].drop_duplicates()), include_groups=False)
+    por_tipo_tab["por_motorista"] = por_tipo_tab["viagens"] / por_tipo_tab["tipo"].map(motorista_mes)
+    st.dataframe(por_tipo_tab, hide_index=True, width="stretch", column_config={
+        "tipo": "TIPO", **colunas_resumo,
+        "por_motorista": st.column_config.NumberColumn("VIAGENS POR MOTORISTA/MÊS", format="%.1f",
+                                                       help="Média dos meses em que o motorista viajou"),
+    })
+
+    titulo_secao("Por filial", "Ordenado pela taxa. Em filial com poucas viagens, um único acidente pesa muito na taxa: "
+                               "olhe junto o número de viagens. Filial com acidente e sem viagem na base aparece sem taxa.")
+    por_filial = resumo(v, a, ["filial"]).sort_values(["taxa", "acidentes"], ascending=False, na_position="first")
+    maior = por_filial["taxa"].max()
+    st.dataframe(por_filial, hide_index=True, width="stretch", column_config={
+        "filial": "FILIAL", **colunas_resumo,
+        "taxa": st.column_config.ProgressColumn(f"POR {milhar(POR_MIL)} VIAGENS", format="%.2f", min_value=0,
+                                                max_value=float(maior) if pd.notna(maior) and maior else 1.0),
+    })
+
+
+def tabela_acidentados(a: pd.DataFrame, viagens: pd.DataFrame) -> None:
+    titulo_secao("Acidentados × viagens",
+                 "Cada acidente do filtro com as viagens do motorista (pelo CPF): no mês do acidente e nos 12 meses "
+                 "anteriores. Agregado: o código é do motorista do veículo.")
+    if a.empty:
+        st.success("Nenhum acidente no filtro.")
+        return
+    por_cpf_mes = viagens.groupby(["cpf", "periodo"])["viagens"].sum()
+    cpfs = set(por_cpf_mes.index.get_level_values(0)) - {""}
+
+    def no_mes(cpf, p):
+        return int(por_cpf_mes.get((cpf, p), 0)) if cpf in cpfs else None
+
+    def em_12(cpf, p):
+        if cpf not in cpfs:
+            return None
+        serie = por_cpf_mes.loc[cpf]
+        return int(serie[(serie.index >= p - 12) & (serie.index < p)].sum())
+
+    tabela = a.sort_values("data_evento", ascending=False)[
+        ["data_evento", "nome", "filial", "tipo", "tipo_perda", "placa", "cpf_limpo", "periodo"]].copy()
+    tabela["na_base"] = tabela["cpf_limpo"].isin(cpfs)
+    tabela["viagens_mes"] = [no_mes(c, p) for c, p in zip(tabela["cpf_limpo"], tabela["periodo"])]
+    tabela["viagens_12m"] = [em_12(c, p) for c, p in zip(tabela["cpf_limpo"], tabela["periodo"])]
+    tabela = tabela.drop(columns=["cpf_limpo", "periodo"])
+    # célula vazia vira "None" no st.dataframe: na tela, "—"; no Excel fica vazia e numérica
+    tela = tabela.copy()
+    tela[["nome", "tipo_perda", "placa"]] = tela[["nome", "tipo_perda", "placa"]].fillna("")
+    for coluna in ("viagens_mes", "viagens_12m"):
+        tela[coluna] = tela[coluna].map(lambda n: "—" if n is None or pd.isna(n) else str(int(n)))
+    achados = int(tabela["na_base"].sum())
+    st.caption(f"{achados} de {len(tabela)} acidentado(s) encontrados na base de viagens pelo CPF.")
+    colunas = {
+        "data_evento": st.column_config.DateColumn("DATA", format="DD/MM/YYYY"),
+        "nome": "ACIDENTADO",
+        "filial": "FILIAL",
+        "tipo": "TIPO",
+        "tipo_perda": "TIPO DE PERDA",
+        "placa": "PLACA",
+        "na_base": st.column_config.CheckboxColumn("NA BASE DE VIAGENS"),
+        "viagens_mes": "VIAGENS NO MÊS",
+        "viagens_12m": st.column_config.TextColumn("12 MESES ANTES", help="Viagens nos 12 meses antes do mês do acidente"),
+    }
+    st.dataframe(tela, hide_index=True, width="stretch", column_config=colunas)
+    baixar_excel(tabela, colunas, "acidentados_x_viagens", "ind_av_xlsx_acid", "Acidentados")
+
+
+def relatorio_viagens(v: pd.DataFrame, a: pd.DataFrame) -> None:
+    tabela = resumo(v, a, ["periodo", "filial", "tipo"]).sort_values(["periodo", "filial", "tipo"], ascending=[False, True, True])
+    if tabela.empty:
+        st.info("Nenhuma viagem no filtro.")
+        return
+    tabela["periodo"] = tabela["periodo"].map(_rotulo_mes)
+    colunas = {
+        "periodo": "MÊS",
+        "filial": "FILIAL",
+        "tipo": "TIPO",
+        "viagens": st.column_config.NumberColumn("VIAGENS", format="%d"),
+        "motoristas": st.column_config.NumberColumn("MOTORISTAS", format="%d"),
+        "acidentes": st.column_config.NumberColumn("ACIDENTES", format="%d"),
+        "taxa": st.column_config.NumberColumn(f"POR {milhar(POR_MIL)} VIAGENS", format="%.2f"),
+    }
+    st.dataframe(tabela, hide_index=True, width="stretch", column_config=colunas)
+    baixar_excel(tabela, colunas, "acidentes_x_viagens", "ind_av_xlsx", "Acidentes x Viagens")
