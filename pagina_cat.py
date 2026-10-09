@@ -9,9 +9,15 @@ Registros responde às perguntas do MD: quantos acidentes no período, com e
 sem afastamento, quantos afastamentos passaram de 15 dias (a partir do 16º
 dia quem paga é o INSS), dias perdidos e onde se concentram (agente
 causador, filial, setor, cargo). Campo vazio não vira zero.
+
+Prazo da CAT (Lei 8.213, art. 22; eSocial S-2210): emitir até o 1º dia útil
+seguinte ao acidente. A data de emissão é a de recebimento no eSocial (campo
+39 do PDF). Dia útil aqui = sem sábado, domingo e feriado nacional; feriado
+estadual/municipal não entra. Em caso de morte o prazo é imediato — a CAT
+não guarda óbito, então essa exceção não é tratada.
 """
 
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -49,11 +55,14 @@ AGENTES = [
     "Animal", "Agressão / violência",
 ]
 DIAS_INSS = 15  # até o 15º dia a empresa paga; a partir do 16º, o INSS
+# feriados nacionais fixos (mês, dia); a Sexta-feira Santa é calculada pela Páscoa
+FERIADOS_FIXOS = {(1, 1), (4, 21), (5, 1), (9, 7), (10, 12), (11, 2), (11, 15), (11, 20), (12, 25)}
+SITUACOES_PRAZO = ["No prazo", "Atrasada", "Sem data de emissão"]
 COLUNAS = [
     "id", "numero_cat", "nome", "cpf", "sexo", "data_nascimento", "cargo", "filial", "cod_filial",
     "publico", "setor", "data_acidente", "hora_acidente", "horario_trabalho", "local_acidente",
     "tipo_acidente", "parte_corpo", "lateralidade", "agente_causador", "descricao", "medico_nome",
-    "cid", "data_atestado", "houve_afastamento", "dias_afastamento", "link_evidencia",
+    "cid", "data_atestado", "houve_afastamento", "dias_afastamento", "data_emissao", "link_evidencia",
     "criado_em", "criado_por",
 ]
 MSG_NOVA = "cat_msg_nova"
@@ -82,15 +91,60 @@ def carregar() -> pd.DataFrame:
         st.error(f"Não foi possível ler {banco.CAT}: {erro}")
         df = pd.DataFrame()
     if df.empty:
-        return pd.DataFrame(columns=COLUNAS)
+        return pd.DataFrame(columns=COLUNAS + ["prazo_emissao", "situacao_prazo", "dias_atraso"])
     df = garantir_colunas(df, COLUNAS)
-    for coluna in ("data_acidente", "data_nascimento", "data_atestado"):
+    for coluna in ("data_acidente", "data_nascimento", "data_atestado", "data_emissao"):
         df[coluna] = df[coluna].map(para_data)
     df["hora_acidente"] = df["hora_acidente"].map(para_hora)
     df["dias_afastamento"] = pd.to_numeric(df["dias_afastamento"], errors="coerce")
     # True / False / None de verdade (o pandas pode trazer numpy.bool_ ou NaN)
     df["houve_afastamento"] = df["houve_afastamento"].map(lambda a: None if vazio(a) else bool(a))
+    prazo = [situacao_prazo(a, e) for a, e in zip(df["data_acidente"], df["data_emissao"])]
+    df["prazo_emissao"] = [p[0] for p in prazo]
+    df["situacao_prazo"] = [p[1] for p in prazo]
+    df["dias_atraso"] = pd.to_numeric([p[2] for p in prazo], errors="coerce")
     return df
+
+
+# ---------------------------------------------------------------------
+# Prazo legal de emissão
+# ---------------------------------------------------------------------
+
+def pascoa(ano: int) -> date:
+    """Domingo de Páscoa (algoritmo de Meeus/Jones/Butcher)."""
+    a, b, c = ano % 19, ano // 100, ano % 100
+    d, e = b // 4, b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = c // 4, c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    mes = (h + l - 7 * m + 114) // 31
+    return date(ano, mes, (h + l - 7 * m + 114) % 31 + 1)
+
+
+def dia_util(d: date) -> bool:
+    return d.weekday() < 5 and (d.month, d.day) not in FERIADOS_FIXOS and d != pascoa(d.year) - timedelta(days=2)
+
+
+def prazo_emissao(data_acidente: date) -> date:
+    """1º dia útil seguinte ao acidente."""
+    d = data_acidente + timedelta(days=1)
+    while not dia_util(d):
+        d += timedelta(days=1)
+    return d
+
+
+def situacao_prazo(data_acidente, data_emissao) -> tuple:
+    """(prazo, situação, dias de atraso). Atraso em dias corridos depois do prazo."""
+    if not data_acidente:
+        return None, "Sem data de emissão", None
+    prazo = prazo_emissao(data_acidente)
+    if not data_emissao:
+        return prazo, "Sem data de emissão", None
+    atraso = (data_emissao - prazo).days
+    return prazo, ("Atrasada" if atraso > 0 else "No prazo"), max(atraso, 0)
 
 
 def opcoes(df: pd.DataFrame, coluna: str, base: list) -> list:
@@ -142,6 +196,22 @@ def campos_cat(df: pd.DataFrame, k: str, atual: dict) -> dict:
                                          key=f"{k}_horario", placeholder="Ex.: 08:00 às 17:48")
     with c13:
         tipo = campo_lista("TIPO DE ACIDENTE", TIPOS, f"{k}_tipo", atual.get("tipo_acidente"))
+    c_em, c_prazo = st.columns([1.1, 4.2])
+    with c_em:
+        data_emissao = st.date_input(
+            "DATA DE EMISSÃO DA CAT", value=atual.get("data_emissao"), max_value=date.today(),
+            format="DD/MM/YYYY", key=f"{k}_emissao",
+            help="Data de recebimento no eSocial (campo 39 do PDF da CAT). Em branco = ainda não emitida.")
+    with c_prazo:
+        if data_acidente:
+            prazo, situacao, atraso = situacao_prazo(data_acidente, data_emissao)
+            texto_prazo = f"Prazo legal: até **{prazo:%d/%m/%Y}** (1º dia útil após o acidente)"
+            if situacao == "Atrasada":
+                texto_prazo += f" · :red[**emitida com {atraso} dia(s) de atraso**]"
+            elif situacao == "No prazo":
+                texto_prazo += " · :green[**emitida no prazo**]"
+            st.write("")
+            st.caption(texto_prazo)
     local = st.text_input("LOCAL DO ACIDENTE (completo e com CEP)", value=texto(atual.get("local_acidente")) or "",
                           key=f"{k}_local")
     c14, c15, c16 = st.columns([1.4, 1, 1.8])
@@ -207,6 +277,7 @@ def campos_cat(df: pd.DataFrame, k: str, atual: dict) -> dict:
         "medico_nome": texto(medico),
         "cid": (texto(cid) or "").upper() or None,
         "data_atestado": data_atestado,
+        "data_emissao": data_emissao,
         "houve_afastamento": afastamento,
         "dias_afastamento": int(dias) if afastamento is True and dias is not None else None,
         "link_evidencia": link_atual,
@@ -234,6 +305,8 @@ def validar(d: dict, df: pd.DataFrame, rid=None) -> list:
         erros.append("A data de nascimento precisa ser anterior à data do acidente.")
     if d["data_atestado"] and d["data_acidente"] and d["data_atestado"] < d["data_acidente"]:
         erros.append("A data do atestado não pode ser anterior à data do acidente.")
+    if d["data_emissao"] and d["data_acidente"] and d["data_emissao"] < d["data_acidente"]:
+        erros.append("A data de emissão da CAT não pode ser anterior à data do acidente.")
     if d["numero_cat"] and not df.empty:
         outros = df if rid is None else df[df["id"] != rid]
         if (outros["numero_cat"].map(texto) == d["numero_cat"]).any():
@@ -342,6 +415,7 @@ def registros(df: pd.DataFrame) -> None:
     tabela = f[[
         "id", "data_acidente", "numero_cat", "nome", "cpf", "publico", "filial", "setor", "cargo",
         "tipo_acidente", "agente_causador", "parte_corpo", "afastamento", "dias_afastamento", "cid",
+        "data_emissao", "situacao_prazo", "dias_atraso",
     ]].copy()
     tabela["cpf"] = tabela["cpf"].map(fmt_cpf)
     textos = ["numero_cat", "nome", "publico", "filial", "setor", "cargo", "tipo_acidente",
@@ -365,6 +439,9 @@ def registros(df: pd.DataFrame) -> None:
         "afastamento": "AFASTAMENTO",
         "dias_afastamento": st.column_config.NumberColumn("DIAS", format="%d"),
         "cid": "CID",
+        "data_emissao": st.column_config.DateColumn("EMISSÃO", format="DD/MM/YYYY"),
+        "situacao_prazo": "PRAZO DA CAT",
+        "dias_atraso": st.column_config.NumberColumn("DIAS DE ATRASO", format="%d"),
     }
     evento = st.dataframe(
         tabela,
