@@ -4,7 +4,9 @@ filial é o mesmo do resto do app (acesso.listar).
 
 Acidentes Internos: CATs (segtrabalho_cat) — quantos acidentes, com e sem
 afastamento, dias perdidos e onde se concentram. Dias perdidos se dividem em
-até o 15º dia (a empresa paga) e a partir do 16º (o INSS paga).
+até o 15º dia (a empresa paga) e a partir do 16º (o INSS paga). A aba Prazo
+da CAT mostra as CATs emitidas no prazo legal (1º dia útil após o acidente)
+e as atrasadas — a regra está em pagina_cat.situacao_prazo.
 
 Treinamentos: listas de presença (segtrabalho_treinamento) — volume por mês e
 ano, quando acontecem (dia da semana, semana do mês), pessoas por turma,
@@ -43,6 +45,7 @@ MESES_NOME = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho
 DIAS_INSS = pagina_cat.DIAS_INSS
 COR_EMPRESA, COR_INSS = "#E4610A", "#8C1D18"
 COR_COM, COR_SEM, COR_NAO_INFORMADO = "#E4610A", "#D9CBBF", "#9A8E86"
+CORES_PRAZO = ["#2E7D46", "#B3261E", "#D9CBBF"]  # no prazo, atrasada, sem data de emissão
 CARGA_HISTORICA = "carga planilha"  # criado_por das cargas 2024/2025 (data = dia 1º do mês)
 DIAS_SEMANA = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
 SEMANAS_MES = ["1ª (dias 1–7)", "2ª (8–14)", "3ª (15–21)", "4ª (22–28)", "5ª (29–31)"]
@@ -110,13 +113,15 @@ def acidentes_internos() -> None:
 
     cartoes_acidentes(f)
     st.write("")
-    analise, relatorio = st.tabs(["📊 Análise", "📄 Relatório"])
+    analise, aba_prazo, relatorio = st.tabs(["📊 Análise", "⏱️ Prazo da CAT", "📄 Relatório"])
     with analise:
         if f.empty:
             st.info("Nenhuma CAT no filtro.")
         else:
             comparacao_mes(df, filiais, publicos)
             graficos_acidentes(f)
+    with aba_prazo:
+        prazo_cat(f)
     with relatorio:
         relatorio_acidentes(f)
 
@@ -289,6 +294,81 @@ def graficos_acidentes(f: pd.DataFrame) -> None:
         ranking(contar(f, "cargo"), "Função")
 
 
+def prazo_cat(f: pd.DataFrame) -> None:
+    """CATs emitidas no prazo legal × atrasadas."""
+    titulo_secao("Prazo de emissão da CAT",
+                 "Prazo legal (Lei 8.213, art. 22 / eSocial S-2210): até o 1º dia útil após o acidente. "
+                 "Emissão = data de recebimento no eSocial. Dia útil sem sábado, domingo e feriado nacional.")
+    if f.empty:
+        st.info("Nenhuma CAT no filtro.")
+        return
+    no_prazo = int((f["situacao_prazo"] == "No prazo").sum())
+    atrasadas = f[f["situacao_prazo"] == "Atrasada"]
+    sem_data = int((f["situacao_prazo"] == "Sem data de emissão").sum())
+    emitidas = no_prazo + len(atrasadas)
+    linha_cartoes([
+        ("No prazo", f"{no_prazo / emitidas:.0%}" if emitidas else "—",
+         "verde" if emitidas and no_prazo == emitidas else "laranja" if emitidas else "neutro",
+         f"{no_prazo} de {emitidas} CATs emitidas"),
+        ("Atrasadas", f"{len(atrasadas)}", "vermelho" if len(atrasadas) else "verde", "emitidas depois do prazo"),
+        ("Atraso médio", f"{atrasadas['dias_atraso'].mean():.1f} dias".replace(".", ",") if len(atrasadas) else "—",
+         "neutro", f"maior atraso: {int(atrasadas['dias_atraso'].max())} dias" if len(atrasadas) else "só das atrasadas"),
+        ("Sem data de emissão", f"{sem_data}", "laranja" if sem_data else "neutro",
+         "ainda não emitida ou data não preenchida"),
+    ])
+
+    periodos = f["data_acidente"].map(lambda d: pd.Period(d, "M"))
+    meses = pd.period_range(periodos.min(), periodos.max(), freq="M")
+    mensal = pd.crosstab(periodos, f["situacao_prazo"]).reindex(index=meses, columns=pagina_cat.SITUACOES_PRAZO,
+                                                               fill_value=0)
+    mensal["mes"] = [f"{MESES[p.month - 1]}/{str(p.year)[2:]}" for p in mensal.index]
+    titulo_secao("CATs por mês do acidente", legenda_html(pagina_cat.SITUACOES_PRAZO, CORES_PRAZO))
+    st.altair_chart(barras_empilhadas(mensal.reset_index(drop=True), pagina_cat.SITUACOES_PRAZO, CORES_PRAZO, "CATs"))
+
+    titulo_secao("Por filial", "Ordenado pelo número de atrasadas.")
+    por_filial = (
+        f.groupby(f["filial"].fillna("Sem filial"))
+        .agg(cats=("id", "size"),
+             no_prazo=("situacao_prazo", lambda x: int((x == "No prazo").sum())),
+             atrasadas=("situacao_prazo", lambda x: int((x == "Atrasada").sum())),
+             sem_data=("situacao_prazo", lambda x: int((x == "Sem data de emissão").sum())),
+             atraso_medio=("dias_atraso", lambda x: x[x > 0].mean()))
+        .reset_index()
+    )
+    por_filial["pct"] = por_filial["no_prazo"] / (por_filial["no_prazo"] + por_filial["atrasadas"]).replace(0, pd.NA) * 100
+    por_filial = por_filial.sort_values(["atrasadas", "cats"], ascending=False)
+    st.dataframe(por_filial, hide_index=True, width="stretch", column_config={
+        "filial": "FILIAL",
+        "cats": st.column_config.NumberColumn("CATs", format="%d"),
+        "no_prazo": st.column_config.NumberColumn("NO PRAZO", format="%d"),
+        "atrasadas": st.column_config.NumberColumn("ATRASADAS", format="%d"),
+        "sem_data": st.column_config.NumberColumn("SEM DATA DE EMISSÃO", format="%d"),
+        "atraso_medio": st.column_config.NumberColumn("ATRASO MÉDIO (DIAS)", format="%.1f"),
+        "pct": st.column_config.ProgressColumn("% NO PRAZO", format="%.0f%%", min_value=0, max_value=100),
+    })
+
+    titulo_secao("CATs atrasadas e sem emissão", "Da mais atrasada para a menos atrasada.")
+    lista = f[f["situacao_prazo"] != "No prazo"].sort_values("dias_atraso", ascending=False, na_position="last")
+    if lista.empty:
+        st.success("Todas as CATs do filtro foram emitidas no prazo.")
+        return
+    tabela = lista[["data_acidente", "prazo_emissao", "data_emissao", "dias_atraso", "situacao_prazo",
+                    "numero_cat", "nome", "filial", "tipo_acidente"]]
+    colunas = {
+        "data_acidente": st.column_config.DateColumn("ACIDENTE", format="DD/MM/YYYY"),
+        "prazo_emissao": st.column_config.DateColumn("PRAZO", format="DD/MM/YYYY"),
+        "data_emissao": st.column_config.DateColumn("EMISSÃO", format="DD/MM/YYYY"),
+        "dias_atraso": st.column_config.NumberColumn("DIAS DE ATRASO", format="%d"),
+        "situacao_prazo": "SITUAÇÃO",
+        "numero_cat": "Nº CAT",
+        "nome": "COLABORADOR",
+        "filial": "FILIAL",
+        "tipo_acidente": "TIPO",
+    }
+    st.dataframe(tabela, hide_index=True, width="stretch", column_config=colunas)
+    baixar_excel(tabela, colunas, "cat_prazo_atrasadas", "ind_ai_xlsx_prazo", "Prazo da CAT")
+
+
 def relatorio_acidentes(f: pd.DataFrame) -> None:
     if f.empty:
         st.info("Nenhuma CAT no filtro.")
@@ -296,6 +376,7 @@ def relatorio_acidentes(f: pd.DataFrame) -> None:
     tabela = f.sort_values("data_acidente", ascending=False)[[
         "data_acidente", "numero_cat", "nome", "filial", "publico", "cargo", "tipo_acidente",
         "agente_causador", "parte_corpo", "afastamento", "dias_afastamento", "dias_empresa", "dias_inss",
+        "prazo_emissao", "data_emissao", "situacao_prazo", "dias_atraso",
     ]]
     colunas = {
         "data_acidente": st.column_config.DateColumn("DATA", format="DD/MM/YYYY"),
@@ -311,6 +392,10 @@ def relatorio_acidentes(f: pd.DataFrame) -> None:
         "dias_afastamento": st.column_config.NumberColumn("DIAS", format="%d"),
         "dias_empresa": st.column_config.NumberColumn("DIAS EMPRESA", format="%d"),
         "dias_inss": st.column_config.NumberColumn("DIAS INSS", format="%d"),
+        "prazo_emissao": st.column_config.DateColumn("PRAZO DA CAT", format="DD/MM/YYYY"),
+        "data_emissao": st.column_config.DateColumn("EMISSÃO", format="DD/MM/YYYY"),
+        "situacao_prazo": "SITUAÇÃO DO PRAZO",
+        "dias_atraso": st.column_config.NumberColumn("DIAS DE ATRASO", format="%d"),
     }
     st.dataframe(tabela, hide_index=True, width="stretch", column_config=colunas)
     baixar_excel(tabela, colunas, "indicador_acidentes_internos", "ind_ai_xlsx", "Acidentes internos")
