@@ -127,3 +127,45 @@ def campo_filial(rotulo: str, key: str, cod_atual=None) -> tuple:
         format_func=lambda c: "—" if c is None else f"{FILIAIS.get(c, c)} · {c}",
     )
     return (escolha, FILIAIS.get(escolha)) if escolha else (None, None)
+
+
+OUTRO_LOCAL = "__outro__"
+
+
+def campo_filial_ou_local(rotulo: str, key: str, cod_atual=None, nome_atual=None) -> tuple:
+    """campo_filial + "OUTRO — digitar", para o que é feito fora da filial (ex.: treinamento no cliente).
+
+    O local digitado vai no nome (`filial`); o código continua sendo o da filial
+    responsável — é ele que decide quem vê o registro. Devolve (código, nome).
+    """
+    codigos = perfil()["codigos"]
+    if not codigos:
+        st.selectbox(rotulo, ["Sem filial liberada para o seu usuário"], key=key, disabled=True)
+        return None, None
+    cod_atual = str(cod_atual).strip() if cod_atual is not None and not pd.isna(cod_atual) else None
+    nome_atual = str(nome_atual).strip() if nome_atual is not None and not pd.isna(nome_atual) else None
+    fora = bool(cod_atual and nome_atual and nome_atual != FILIAIS.get(cod_atual))
+
+    def nome(c):
+        if c is None:
+            return "—"
+        return "OUTRO — digitar (ex.: cliente)" if c == OUTRO_LOCAL else f"{FILIAIS.get(c, c)} · {c}"
+
+    opcoes = ([None] if len(codigos) > 1 else []) + codigos + [OUTRO_LOCAL]
+    indice = opcoes.index(OUTRO_LOCAL) if fora else opcoes.index(cod_atual) if cod_atual in opcoes else 0
+    escolha = st.selectbox(rotulo, opcoes, index=indice, key=key, format_func=nome)
+    if escolha != OUTRO_LOCAL:
+        return (escolha, FILIAIS.get(escolha)) if escolha else (None, None)
+
+    local = st.text_input("LOCAL (cliente)", value=nome_atual if fora else "", key=f"{key}_local",
+                          placeholder="Ex.: Cliente X — unidade Y")
+    if len(codigos) == 1:
+        cod = codigos[0]
+        st.caption(f"Filial responsável: {FILIAIS.get(cod, cod)}")
+    else:
+        responsaveis = [None] + codigos
+        cod = st.selectbox("FILIAL RESPONSÁVEL", responsaveis, key=f"{key}_resp", format_func=nome,
+                           index=responsaveis.index(cod_atual) if cod_atual in responsaveis else 0,
+                           help="Filial que fez o treinamento: é ela que vê e acompanha o registro no app.")
+    local = local.strip() or None
+    return (cod, local) if cod and local else (None, None)
