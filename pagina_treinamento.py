@@ -159,7 +159,7 @@ def campos_treinamento(df: pd.DataFrame, k: str) -> tuple:
     with c2:
         data_tr = st.date_input("DATA DO TREINAMENTO", value=date.today(), format="DD/MM/YYYY", key=f"{k}_data")
     with c3:
-        cod_filial, filial = acesso.campo_filial("FILIAL", f"{k}_filial")
+        cod_filial, filial = acesso.campo_filial_ou_local("FILIAL", f"{k}_filial")
     return treinamento, data_tr, cod_filial, filial
 
 
@@ -1003,7 +1003,7 @@ def editar(reg: pd.Series, df: pd.DataFrame) -> None:
     with c5:
         instrutor = campo_instrutor(df, f"{k}_instrutor", reg["instrutor"])
     with c6:
-        cod_filial, filial = acesso.campo_filial("FILIAL", f"{k}_filial", reg["cod_filial"])
+        cod_filial, filial = acesso.campo_filial_ou_local("FILIAL", f"{k}_filial", reg["cod_filial"], reg["filial"])
 
     c7, c8, c11, c9, c10 = st.columns(5)
     with c11:
